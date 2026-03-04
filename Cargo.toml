@@ -1,0 +1,22 @@
+[workspace]
+members = ["streamfn-core"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = []
+
+[workspace.dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+tokio = { version = "1.40", features = ["full"] }
+crossbeam = "0.8"
+memmap2 = "0.9"
+parking_lot = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+dashmap = "6.0"

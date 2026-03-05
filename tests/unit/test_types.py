@@ -1,7 +1,7 @@
 """Unit tests for types."""
 
 import pytest
-from streamfn import StreamConfig, StreamMetrics
+from velo import StreamConfig, StreamMetrics
 
 
 def test_stream_config_defaults():

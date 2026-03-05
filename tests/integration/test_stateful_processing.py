@@ -1,7 +1,7 @@
 """Integration tests for stateful processing."""
 
 import pytest
-from streamfn import stream_fn
+from velo import stream_fn
 
 
 @pytest.mark.asyncio

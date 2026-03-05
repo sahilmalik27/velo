@@ -12,7 +12,7 @@ def run() -> Dict[str, Any]:
 
 async def async_run() -> Dict[str, Any]:
     """Async comparison."""
-    from streamfn import stream_fn
+    from velo import stream_fn
 
     # streamfn version
     @stream_fn

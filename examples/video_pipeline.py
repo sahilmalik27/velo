@@ -5,7 +5,7 @@ Demonstrates: stateful frame differencing for motion detection
 """
 
 import asyncio
-from streamfn import stream_fn
+from velo import stream_fn
 
 
 @stream_fn

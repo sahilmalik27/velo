@@ -1,7 +1,7 @@
 """Unit tests for stream_fn decorator."""
 
 import pytest
-from streamfn import stream_fn, StreamConfig
+from velo import stream_fn, StreamConfig
 
 
 @pytest.mark.asyncio

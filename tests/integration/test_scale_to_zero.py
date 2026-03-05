@@ -3,7 +3,7 @@
 import asyncio
 import pytest
 import psutil
-from streamfn import stream_fn
+from velo import stream_fn
 
 
 @pytest.mark.asyncio

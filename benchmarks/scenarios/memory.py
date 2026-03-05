@@ -14,7 +14,7 @@ def run() -> Dict[str, Any]:
 
 async def async_run() -> Dict[str, Any]:
     """Async memory benchmark."""
-    from streamfn import stream_fn
+    from velo import stream_fn
 
     @stream_fn
     async def idle_stream(events):

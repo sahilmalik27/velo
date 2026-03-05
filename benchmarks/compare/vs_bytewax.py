@@ -15,7 +15,7 @@ def run() -> Dict[str, Any]:
 
     # streamfn version
     async def streamfn_bench():
-        from streamfn import stream_fn
+        from velo import stream_fn
 
         @stream_fn
         async def process(events):

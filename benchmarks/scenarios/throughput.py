@@ -12,7 +12,7 @@ def run() -> Dict[str, Any]:
 
 async def async_run() -> Dict[str, Any]:
     """Async throughput benchmark."""
-    from streamfn import stream_fn
+    from velo import stream_fn
 
     @stream_fn
     async def passthrough(events):

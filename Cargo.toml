@@ -1,5 +1,5 @@
 [workspace]
-members = ["streamfn-core"]
+members = ["velo-core"]
 resolver = "2"
 
 [workspace.package]

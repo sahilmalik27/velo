@@ -6,7 +6,7 @@ Demonstrates: 30-second rolling windows over sensor data bursts
 
 import asyncio
 from datetime import datetime
-from streamfn import stream_fn
+from velo import stream_fn
 
 
 @stream_fn

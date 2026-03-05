@@ -12,7 +12,7 @@ def run() -> Dict[str, Any]:
 
 async def async_run() -> Dict[str, Any]:
     """Async concurrency benchmark."""
-    from streamfn import stream_fn
+    from velo import stream_fn
 
     @stream_fn
     async def counter(events):

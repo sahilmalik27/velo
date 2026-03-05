@@ -2,7 +2,7 @@
 
 import pytest
 from pathlib import Path
-from streamfn.adapters import FileAdapter, GeneratorAdapter
+from velo.adapters import FileAdapter, GeneratorAdapter
 
 
 @pytest.mark.asyncio

@@ -1,8 +1,8 @@
 # velo ⚡
 
-**Fast, stateful, ephemeral stream functions — with a Rust core.**
+**Stateful stream processing without the infrastructure overhead.**
 
-```python
+```bash
 pip install velo-py
 ```
 
@@ -10,42 +10,75 @@ pip install velo-py
 
 ## The problem
 
-You have a stream of events that need **stateful processing** — but your tools don't fit:
+Some workloads arrive as a **sequence of related events** that need to share memory.
 
-- **AWS Lambda / Cloud Functions** — stateless. You need Redis just to count events.
-- **Apache Kafka + Flink** — always-on, heavyweight. Startup takes seconds. Overkill for a 10-second video clip.
-- **Pure asyncio queues** — fine for small loads, but slow and fragile under pressure.
+A video upload: frame 1, frame 2, frame 3 — to detect motion you need to remember the previous frame.
 
-There's a gap: **short-lived, bursty, stateful streams** that arrive unpredictably and need to vanish when done.
+A user session: click, scroll, purchase — to detect fraud you need to remember what happened earlier.
 
-Velo fills that gap.
+A sensor burst: reading, reading, reading — to compute a rolling average you need the last N values.
+
+Events within a group are **related**. They need shared state. And then they're done.
+
+**You have three options today:**
+
+**Option 1 — External storage (Redis, DynamoDB)**
+```python
+def process_frame(frame_id, frame_data):
+    prev = redis.get(f"prev_frame:{frame_id}")  # round trip to Redis
+    diff = compare(frame_data, prev)
+    redis.set(f"prev_frame:{frame_id}", frame_data)  # store it back
+    return diff
+```
+Works. But you're paying for Redis and adding latency just to hold a variable between function calls.
+
+**Option 2 — Always-on pipeline (Flink, Faust, Kafka Streams)**
+```python
+# Running 24/7, eating CPU and memory
+# Even at 3am when no events are coming in
+env.add_source(kafka).map(process).sink(output).execute()
+```
+Works. But the engine never sleeps. You pay for it constantly, even at zero load.
+
+**Option 3 — Velo**
+```python
+@stream_fn
+async def detect_motion(frames):
+    prev = None
+    async for frame in frames:
+        if prev is not None:
+            yield compare(frame, prev)  # state is just a variable
+        prev = frame
+
+# Starts when events arrive. Gone when they stop.
+# State lives in memory. No Redis. No always-on server.
+```
+
+A worker spins up when the stream starts, holds state as plain Python variables, and tears itself down when done. Nothing running at 3am.
 
 ---
 
-## What is Velo?
+## What Velo is (and isn't)
 
-Velo is a Python streaming library with a **Rust runtime underneath**.
+**Velo is:** A library you run inside your existing server or container. It manages stateful worker lifecycles so you don't have to.
 
-You write stream functions as plain Python async generators. Velo handles scheduling, state isolation, backpressure, and scale-to-zero — in Rust, so it's fast.
+**Velo is not:** A serverless platform. Velo runs in a long-lived process — the same way your web server does. You deploy it like any other service.
 
-**The mental model in one sentence:**
-> A stream function is a generator that remembers between events.
+**Velo competes with:** Flink, Faust, Bytewax — for the specific case of short-lived, bursty, stateful streams.
 
----
+**Velo does not compete with:** Lambda, Cloud Functions — those are different deployment models entirely.
 
-## When to use Velo
+### vs the alternatives
 
-✅ **Use Velo when:**
-- Streams are short-lived (seconds to minutes), not always-on pipelines
-- Stream arrival is unpredictable — you need scale-to-zero
-- You need state across events within a stream (running totals, windows, deduplication)
-- You want low overhead — not the weight of Kafka + Flink for a small workload
-- You're building in Python and want Rust-level throughput
+| Tool | Startup | Has state | Idle cost | Complexity |
+|------|---------|-----------|-----------|------------|
+| **Velo** | ~microseconds | ✅ (local vars) | Near zero — workers are dropped | Low — just write generators |
+| Redis + functions | ~ms (+ Redis RTT) | ✅ (external) | Redis always running | Medium — manage keys + TTLs |
+| Apache Flink | 2–10 seconds | ✅ | High — always on | High — JVM, cluster setup |
+| Faust | ~seconds | ✅ | Medium — always on | Medium — Kafka required |
+| Bytewax | ~ms | ✅ | Medium — always on | Medium — continuous pipeline |
 
-❌ **Don't use Velo when:**
-- You have massive, always-on, high-throughput pipelines (use Flink or Bytewax)
-- You need cross-stream aggregation across millions of streams (use a proper OLAP system)
-- You need strict exactly-once delivery guarantees (use Kafka Streams)
+Velo's position: **lower startup than Flink, no external storage like Redis, workers go idle (drop to zero memory) when there's no load.**
 
 ---
 
@@ -54,7 +87,7 @@ You write stream functions as plain Python async generators. Velo handles schedu
 ```python
 from velo import stream_fn
 
-# 1. Define — write it like a Python generator
+# Define — just write an async generator
 @stream_fn
 async def running_average(events):
     total, count = 0.0, 0
@@ -63,21 +96,19 @@ async def running_average(events):
         count += 1
         yield total / count
 
-# 2a. Batch mode — process a list, get results back
+# Batch — process a list, get results
 results = await running_average.run([1, 2, 3, 4, 5])
 # → [1.0, 1.5, 2.0, 2.5, 3.0]
 
-# 2b. Live stream mode — open, send, receive
+# Live stream — open, send events, receive results
 async with running_average.open() as stream:
     await stream.send(10)
     print(await stream.recv())  # 10.0
-
     await stream.send(20)
     print(await stream.recv())  # 15.0
 
-# 3. Compose with | — Unix pipes, but for streams
+# Compose — chain functions with |
 pipeline = normalize | running_average | alert_if_high
-
 async with pipeline.open() as stream:
     async for result in stream.feed(sensor_data):
         print(result)
@@ -87,35 +118,33 @@ async with pipeline.open() as stream:
 
 ## The API
 
-Velo has **4 public exports**. That's the whole surface.
+Four exports. That's the entire public surface.
 
 ```python
 from velo import stream_fn      # the decorator
 from velo import Stream         # type hint for stream handles
-from velo import StreamMetrics  # metrics dataclass
-from velo import StreamConfig   # config dataclass (optional)
+from velo import StreamMetrics  # per-stream metrics
+from velo import StreamConfig   # optional config
 ```
 
 ### `@stream_fn` — define a stream function
 
+Write it exactly like a Python async generator. `events` is an async iterable.
+
 ```python
 @stream_fn
 async def my_fn(events):
-    state = {}
+    state = {}                     # any Python state you want
     async for event in events:
-        # process event, update state, yield result
-        yield result
+        state = update(state, event)
+        yield result(state)
 ```
-
-No special base classes. No magic. Just an async generator.
 
 ### `.run(iterable)` — batch mode
 
 ```python
-results = await my_fn.run([event1, event2, event3])
+results = await my_fn.run([e1, e2, e3])
 ```
-
-Processes all events synchronously, returns a list of results.
 
 ### `.open()` — live stream mode
 
@@ -124,26 +153,23 @@ async with my_fn.open() as stream:
     await stream.send(event)
     result = await stream.recv()
 
-    # or iterate:
+    # or iterate results:
     async for result in stream.feed(source):
         handle(result)
 ```
 
-The stream is alive until the `async with` block exits. State is maintained throughout.
-
 ### `|` — pipe composition
 
 ```python
-pipeline = fn_a | fn_b | fn_c
+pipeline = fn_a | fn_b | fn_c   # output of fn_a feeds fn_b, etc.
+results = await pipeline.run(data)
 ```
-
-Creates a new stream function where output of `fn_a` feeds `fn_b`, and so on. Fully composable, returns a stream function you can `.run()` or `.open()`.
 
 ### Optional config
 
 ```python
 @stream_fn(
-    buffer=256,           # event buffer size before backpressure (default: 256)
+    buffer=256,           # events buffered before backpressure (default: 256)
     timeout=30.0,         # idle seconds before auto-close (default: 30.0)
     max_concurrent=1000,  # max parallel instances (default: 1000)
 )
@@ -151,16 +177,30 @@ async def my_fn(events):
     ...
 ```
 
-All config is optional and keyword-only. Works without any config.
+All config is optional. Works with zero config.
 
 ---
 
 ## Real examples
 
-### IoT sensor burst — rolling window
+### Video — motion detection across frames
 
 ```python
-from velo import stream_fn
+@stream_fn
+async def detect_motion(frames):
+    prev = None
+    async for frame in frames:
+        if prev is not None:
+            diff = abs(frame.astype(int) - prev.astype(int)).mean()
+            yield {"frame": frame.id, "motion": diff > 5.0, "score": diff}
+        prev = frame
+
+results = await detect_motion.run(video.frames())
+```
+
+### IoT — rolling window over sensor bursts
+
+```python
 from collections import deque
 
 @stream_fn
@@ -174,23 +214,21 @@ async def rolling_stats(events):
             "max": max(window),
         }
 
-# Process a 30-second burst of sensor readings
 async with rolling_stats.open() as stream:
     async for stat in stream.feed(sensor_readings):
         if stat["max"] > threshold:
             trigger_alert(stat)
 ```
 
-### LLM token stream — stateful post-processing
+### LLM — stateful token stream post-processing
 
 ```python
-from velo import stream_fn
+import json
 
 @stream_fn
 async def extract_json(tokens):
-    """Accumulate tokens until a complete JSON object is formed."""
-    buffer = ""
-    depth = 0
+    """Accumulate tokens until a complete JSON object forms."""
+    buffer, depth = "", 0
     async for token in tokens:
         buffer += token
         depth += token.count("{") - token.count("}")
@@ -198,58 +236,29 @@ async def extract_json(tokens):
             yield json.loads(buffer)
             buffer = ""
 
-# Works directly on LLM streaming output
 async with extract_json.open() as stream:
     async for obj in stream.feed(llm.stream("List 3 items as JSON")):
         process(obj)
 ```
 
-### Video pipeline — stateful frame processing
-
-```python
-from velo import stream_fn
-import numpy as np
-
-@stream_fn
-async def detect_motion(frames):
-    prev = None
-    async for frame in frames:
-        if prev is not None:
-            diff = np.abs(frame.astype(int) - prev.astype(int)).mean()
-            yield {"frame_id": frame.id, "motion_score": diff, "motion": diff > 5.0}
-        prev = frame
-
-# Process a short video clip — starts in microseconds, gone when done
-results = await detect_motion.run(video.frames())
-```
-
-### Pipeline composition
+### Session — stateful user event correlation
 
 ```python
 @stream_fn
-async def normalize(events):
-    async for e in events:
-        yield e / 255.0
+async def detect_fraud(events):
+    seen_ips = set()
+    total_spend = 0.0
+    async for event in events:
+        seen_ips.add(event["ip"])
+        total_spend += event.get("amount", 0)
+        risk = len(seen_ips) > 3 or total_spend > 1000
+        yield {"event": event, "risk_score": risk}
 
-@stream_fn
-async def smooth(events):
-    buf = []
-    async for e in events:
-        buf.append(e)
-        if len(buf) == 5:
-            yield sum(buf) / 5
-            buf.pop(0)
-
-@stream_fn
-async def threshold(events):
-    async for e in events:
-        if e > 0.8:
-            yield {"alert": True, "value": e}
-
-# Compose into a pipeline
-pipeline = normalize | smooth | threshold
-
-alerts = await pipeline.run(raw_sensor_data)
+# One stream per user session — isolated state, auto cleanup
+async with detect_fraud.open() as stream:
+    async for result in stream.feed(user_events):
+        if result["risk_score"]:
+            flag_for_review(result)
 ```
 
 ---
@@ -258,33 +267,17 @@ alerts = await pipeline.run(raw_sensor_data)
 
 Velo's Rust runtime (tokio + crossbeam) delivers:
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Stream startup | < 500μs | vs. Flink's 2–10 seconds |
-| Inter-event P99 latency | < 500μs | Measured on 1KB payloads |
-| Throughput | > 500K events/sec | Per stream, single core |
-| 1000 concurrent streams | < 1GB memory | Scale-to-zero when idle |
+| Metric | Target |
+|--------|--------|
+| Stream startup | < 500μs |
+| Inter-event P99 latency | < 500μs |
+| Throughput | > 500K events/sec (1KB payloads) |
+| 1000 concurrent idle streams | Near-zero memory (workers dropped) |
 
-**vs. alternatives:**
-
-| Tool | Startup | Stateful | Scale-to-zero | Language |
-|------|---------|----------|---------------|----------|
-| **Velo** | ~microseconds | ✅ | ✅ | Python API / Rust core |
-| AWS Lambda | ~milliseconds | ❌ (needs Redis) | ✅ | Any |
-| Apache Flink | 2–10 seconds | ✅ | ❌ | JVM |
-| Faust | ~seconds | ✅ | ❌ | Python |
-| Bytewax | ~milliseconds | ✅ | ❌ | Python API / Rust core |
-
-Run the full benchmark suite yourself:
+Run the benchmarks yourself:
 
 ```bash
-# Run all scenarios (throughput, latency, startup, concurrency, memory)
 python benchmarks/runner.py --scenario all
-
-# Compare against asyncio baseline
-python benchmarks/runner.py --scenario all --compare asyncio
-
-# Output results as markdown table
 python benchmarks/runner.py --scenario all --format markdown
 ```
 
@@ -299,27 +292,27 @@ Your Python code
       ▼
   Velo Python API
       │
-      │  PyO3 FFI bindings (zero-cost)
+      │  PyO3 FFI bindings
       ▼
   Velo Rust Core (velo-core)
-  ┌───────────────────────────────────┐
-  │  StreamScheduler  (tokio)         │  ← microsecond stream startup
-  │  WorkerPool       (tokio tasks)   │  ← one task per active stream
-  │  RingBuffer       (crossbeam)     │  ← lock-free SPSC channels
-  │  SharedMemArena   (memmap2)       │  ← zero-copy for payloads >4KB
-  │  BackpressureEngine (token bucket)│  ← auto-throttle fast producers
-  └───────────────────────────────────┘
+  ┌──────────────────────────────────┐
+  │  StreamScheduler  (tokio)        │  ← microsecond stream startup
+  │  WorkerPool       (tokio tasks)  │  ← one lightweight task per stream
+  │  RingBuffer       (crossbeam)    │  ← lock-free event passing
+  │  SharedMemArena   (memmap2)      │  ← zero-copy for large payloads
+  │  BackpressureEngine              │  ← auto-throttle fast producers
+  └──────────────────────────────────┘
 ```
 
-- **Rust handles**: scheduling, state isolation, message passing, backpressure, lifecycle
-- **Python handles**: your processing logic (just write generators)
-- **Scale-to-zero**: idle stream workers are dropped by the tokio runtime — no polling, no cleanup code, no idle memory cost
+- **Rust handles**: scheduling, state isolation, message passing, worker lifecycle
+- **Python handles**: your processing logic — just write generators
+- **Workers drop to zero**: idle workers are released by the tokio runtime automatically
 
 ---
 
 ## Installation
 
-### From PyPI (wheels, no Rust required)
+### From PyPI
 
 ```bash
 pip install velo-py
@@ -328,10 +321,9 @@ pip install velo-py
 ### From source (requires Rust)
 
 ```bash
-# Install Rust (if not already installed)
+# Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Clone and build
 git clone https://github.com/sahilmalik27/velo.git
 cd velo
 pip install maturin
@@ -349,92 +341,55 @@ print(velo.__version__)  # 0.1.0
 
 ## Contributing
 
-Contributions are welcome and appreciated. Velo is an open-source project and we'd love your help making it better.
+Contributions are welcome. Velo is early — there's a lot of room to improve.
 
-### Ways to contribute
+**Good first issues:**
+- New adapters (Kafka, Redis Streams, WebSocket, gRPC)
+- Improve benchmark scenarios with real-world workloads
+- JavaScript / Node.js bindings
 
-- **Bug reports** — open an issue with a minimal reproduction
-- **Performance improvements** — especially in the Rust core (`velo-core/src/`)
-- **New adapters** — Kafka, Redis Streams, WebSocket, gRPC
-- **Language bindings** — a JS/Node.js binding would be excellent
-- **Documentation** — more examples, tutorials, comparisons
-- **Benchmarks** — real-world workload comparisons
-
-### Getting started
+**How to contribute:**
 
 ```bash
 git clone https://github.com/sahilmalik27/velo.git
 cd velo
-
-# Install dev dependencies
-pip install maturin
-maturin develop  # debug build (faster compile)
+pip install maturin && maturin develop
 pip install -e ".[dev]"
-
-# Run tests
 pytest tests/ -v
-
-# Run a specific test
-pytest tests/unit/test_decorator.py -v
-
-# Check types
-mypy velo/
 ```
 
-### Project structure
+1. Fork → branch → change → test → PR
+2. All Rust changes need a before/after benchmark
+3. Keep the public API surface small — resist adding to the 4 exports
 
+**Project structure:**
 ```
 velo/
-├── velo-core/          # Rust runtime (tokio, crossbeam, PyO3)
-│   └── src/
-│       ├── scheduler.rs    # Stream lifecycle management
-│       ├── worker.rs       # Per-stream worker tasks
-│       ├── channel.rs      # Lock-free SPSC message channels
-│       ├── arena.rs        # Zero-copy shared memory arena
-│       └── backpressure.rs # Token bucket rate limiting
-├── velo/               # Python API
-│   ├── decorator.py        # @stream_fn
-│   ├── runtime.py          # Stream handle (send/recv/feed)
-│   └── types.py            # StreamConfig, StreamMetrics
-├── benchmarks/         # Performance benchmark suite
-├── examples/           # Real-world usage examples
-└── tests/              # Unit + integration tests
+├── velo-core/      # Rust runtime (tokio, crossbeam, PyO3)
+├── velo/           # Python API (@stream_fn, Stream, config)
+├── benchmarks/     # Performance suite
+├── examples/       # Real-world usage
+└── tests/          # Unit + integration
 ```
-
-### Guidelines
-
-- Keep the public API surface small — resist adding exports beyond the core 4
-- All Rust changes need a benchmark before/after
-- New features need tests (unit + integration where applicable)
-- Follow existing code style (Black for Python, `cargo fmt` for Rust)
-
-### Opening a PR
-
-1. Fork the repo
-2. Create a branch: `git checkout -b feat/your-feature`
-3. Make your changes + add tests
-4. Run: `pytest tests/ -v && cargo test --manifest-path velo-core/Cargo.toml`
-5. Open a PR with a clear description of what and why
 
 ---
 
 ## Roadmap
 
-- [ ] PyPI wheel publishing (GitHub Actions matrix for Linux/Mac/arm64)
-- [ ] Kafka adapter (`from velo.adapters import KafkaAdapter`)
+- [ ] PyPI wheel publishing (no Rust required to install)
+- [ ] Kafka adapter
 - [ ] Redis Streams adapter
-- [ ] WebSocket adapter
-- [ ] Persistent state (optional checkpoint to disk between streams)
-- [ ] Metrics export (Prometheus/OpenTelemetry)
+- [ ] Persistent state (checkpoint to disk between streams)
+- [ ] Prometheus / OpenTelemetry metrics export
 - [ ] JavaScript / Node.js bindings
 
 ---
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE).
 
-You can use Velo freely in commercial projects. The Apache 2.0 license includes an explicit patent grant.
+Free for commercial use. Includes explicit patent grant.
 
 ---
 

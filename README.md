@@ -10,51 +10,109 @@ pip install velo-py
 
 ## The problem
 
-Some workloads arrive as a **sequence of related events** that need to share memory.
+**For one stream, a Python variable is fine.** No argument there.
 
-A video upload: frame 1, frame 2, frame 3 — to detect motion you need to remember the previous frame.
-
-A user session: click, scroll, purchase — to detect fraud you need to remember what happened earlier.
-
-A sensor burst: reading, reading, reading — to compute a rolling average you need the last N values.
-
-Events within a group are **related**. They need shared state. And then they're done.
-
-**You have three options today:**
-
-**Option 1 — External storage (Redis, DynamoDB)**
 ```python
-def process_frame(frame_id, frame_data):
-    prev = redis.get(f"prev_frame:{frame_id}")  # round trip to Redis
-    diff = compare(frame_data, prev)
-    redis.set(f"prev_frame:{frame_id}", frame_data)  # store it back
+prev_frame = None
+
+def process_frame(frame):
+    global prev_frame
+    diff = compare(frame, prev_frame)
+    prev_frame = frame
     return diff
 ```
-Works. But you're paying for Redis and adding latency just to hold a variable between function calls.
 
-**Option 2 — Always-on pipeline (Flink, Faust, Kafka Streams)**
+The problem starts when you have **many streams simultaneously** — hundreds of users, sessions, devices, clips — each needing their own isolated state.
+
+### What happens when you scale with a dict
+
 ```python
-# Running 24/7, eating CPU and memory
-# Even at 3am when no events are coming in
-env.add_source(kafka).map(process).sink(output).execute()
-```
-Works. But the engine never sleeps. You pay for it constantly, even at zero load.
+# Step 1: one dict per state variable
+prev_frames = {}
 
-**Option 3 — Velo**
+def process_frame(user_id, frame):
+    diff = compare(frame, prev_frames.get(user_id))
+    prev_frames[user_id] = frame
+    return diff
+```
+
+Fine. Now the problems:
+
+**When do you delete `prev_frames[user_id]`?** The user disconnected. Or did they time out? Or crash? `prev_frames` grows forever. Memory leak.
+
+```python
+# Step 2: add timeout cleanup
+last_seen = {}
+
+def cleanup():
+    stale = [k for k, v in last_seen.items() if time.time() - v > 30]
+    for k in stale:
+        del prev_frames[k]
+        del last_seen[k]
+```
+
+**Two events from the same user arrive simultaneously.** Race condition.
+
+```python
+# Step 3: add locks
+lock = threading.Lock()
+
+def process_frame(user_id, frame):
+    with lock:
+        diff = compare(frame, prev_frames.get(user_id))
+        prev_frames[user_id] = frame
+        last_seen[user_id] = time.time()
+    cleanup()
+    return diff
+```
+
+**Your state is more than one variable.** Now every new piece of state needs its own dict, its own cleanup entry, its own lock path.
+
+```python
+# Step 4: five state variables = five dicts to manage
+prev_frames = {}
+frame_counts = {}
+motion_scores = {}
+last_seen = {}
+alert_thresholds = {}
+# all need cleanup. all need locking. all need the same boilerplate.
+```
+
+You've spent 50 lines building a fragile lifecycle manager instead of writing business logic.
+
+**Velo replaces all of that:**
+
 ```python
 @stream_fn
-async def detect_motion(frames):
+async def process_frames(frames):
     prev = None
-    async for frame in frames:
-        if prev is not None:
-            yield compare(frame, prev)  # state is just a variable
-        prev = frame
+    count = 0
+    motion_scores = []
 
-# Starts when events arrive. Gone when they stop.
-# State lives in memory. No Redis. No always-on server.
+    async for frame in frames:
+        diff = compare(frame, prev) if prev else 0
+        count += 1
+        motion_scores.append(diff)
+        prev = frame
+        yield {"frame": count, "motion": diff, "avg": sum(motion_scores) / count}
+
+# State lifecycle is automatic.
+# Stream closes → all variables are garbage collected.
+# No dicts. No cleanup. No locks. No boilerplate.
 ```
 
-A worker spins up when the stream starts, holds state as plain Python variables, and tears itself down when done. Nothing running at 3am.
+One worker per stream. All state is just local variables. Worker lives exactly as long as the stream — then disappears.
+
+**Velo is a dict of streams with automatic cleanup, timeout handling, backpressure, and thread safety — so you don't write that yourself.**
+
+### When to use Velo
+
+| Situation | Recommendation |
+|-----------|----------------|
+| One stream, simple state | Plain variable — don't use Velo |
+| A few streams you control manually | Dict is fine |
+| Many short-lived concurrent streams | Velo saves real complexity |
+| Already on Flink/Faust and happy | Stay there |
 
 ---
 

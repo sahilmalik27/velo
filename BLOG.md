@@ -153,173 +153,250 @@ You don't write any of this. You write the generator function. Velo handles ever
 
 ## Real-life examples
 
+Each example below shows the **full picture**: how the stream function is defined, and exactly where and how it gets called in a real application.
+
 ### 1. Instagram-style video processing
 
-**The problem:** User uploads a 30fps, 10-second video (300 frames). You need to detect motion, extract highlights, compute per-scene statistics.
+**The problem:** User uploads a 30fps, 10-second video (300 frames). You need to detect motion, extract highlights, compute per-scene statistics — before the video goes live.
 
 **With Lambda + Redis:**
 - 300 Redis reads + 300 Redis writes per video
-- At 10ms Redis latency, that's 6 seconds of I/O for a 10-second video
-- Cost at scale: ~$0.003 per video in Redis operations alone
+- At 10ms Redis latency: 6 seconds of I/O for a 10-second video
+- Plus Redis infrastructure cost, key TTL management, failure handling
 
 **With Flink:**
-- Pipeline must be running before upload arrives
-- 5-second startup time (50% of the video length)
-- Pipeline sits idle between uploads, consuming ~$300/month
+- Pipeline must be running before upload arrives — you can't start it on demand
+- Pipeline sits idle between uploads: ~$300/month burning for nothing
 
-**With Velo:**
+**With Velo — the full integration:**
+
 ```python
+# 1. Define the stream function — your processing logic
+from velo import stream_fn
+
 @stream_fn
 async def process_video(frames):
     stats = {"total": 0, "high_motion": 0, "scenes": []}
     prev = None
-
     async for frame in frames:
-        stats["total"] += 1
         motion = compare(frame, prev) if prev else 0
-
         if motion > MOTION_THRESHOLD:
             stats["high_motion"] += 1
-
         if is_scene_change(frame, prev):
             stats["scenes"].append(frame.timestamp)
-
+        stats["total"] += 1
         prev = frame
         yield frame.with_metadata(stats)
+
+# 2. Call it from your web server — this is where it actually runs
+from fastapi import FastAPI, UploadFile
+
+app = FastAPI()
+
+@app.post("/upload")
+async def upload_video(file: UploadFile):
+    processed_frames = []
+
+    # Open ONE stream per upload — one worker, isolated state
+    async with process_video.open() as stream:
+        async for result in stream.feed(extract_frames(file)):
+            processed_frames.append(result)
+            # results stream back as frames are processed
+
+    return {
+        "frames": len(processed_frames),
+        "high_motion_frames": processed_frames[-1].metadata["high_motion"],
+        "scene_changes": processed_frames[-1].metadata["scenes"]
+    }
 ```
+
+The stream opens when an upload arrives and closes when it ends. 1,000 simultaneous uploads = 1,000 isolated workers, each with their own `prev`, `stats`, and `scenes`. No worker knows about the others.
+
+**Numbers:**
 - Worker starts in ~200 microseconds
 - Zero Redis round trips
-- Zero idle cost between uploads
-- State is just Python variables
+- 1,000 concurrent uploads: each worker uses ~KB of memory
+
+---
 
 ### 2. Earthquake sensor network
 
-**The problem:** 500 seismometers worldwide. Each is silent 99.9% of the time. When a tremor is detected, it sends a burst of 60 seconds of high-frequency readings. You need rolling statistics and anomaly detection across the burst.
+**The problem:** 500 seismometers worldwide. Silent 99.9% of the time. When a tremor hits, a sensor streams 60 seconds of high-frequency readings. You need rolling statistics and anomaly detection across the burst — then silence again.
 
-**The challenge:** You can't predict when bursts arrive. You might get 50 sensors triggering simultaneously during a major event. Or none for a week.
+**With always-on Flink:** ~$2,000/month for a cluster that processes data 0.1% of the time.
 
-**With always-on Flink:** You're running 500 pipeline slots 24/7, waiting. ~$2,000/month for sensors that barely trigger.
+**With Velo — the full integration:**
 
-**With Velo:**
 ```python
+# 1. The stream function
 @stream_fn
 async def analyze_tremor(readings):
     window = []
     baseline = None
-    anomalies = []
 
-    async for reading in readings:
-        window.append(reading.amplitude)
+    async for r in readings:
+        window.append(r.amplitude)
         if len(window) > 100:
             window.pop(0)
-
         avg = sum(window) / len(window)
-        if baseline is None:
-            baseline = avg
-
-        is_anomaly = abs(avg - baseline) > 2 * baseline
-        if is_anomaly:
-            anomalies.append(reading.timestamp)
-
+        baseline = baseline or avg
         yield {
-            "reading": reading,
+            "amplitude": r.amplitude,
             "rolling_avg": avg,
-            "anomaly": is_anomaly,
-            "anomaly_count": len(anomalies)
+            "anomaly": abs(avg - baseline) > 2 * baseline,
+            "timestamp": r.timestamp
         }
+
+# 2. The sensor endpoint — one stream per sensor burst
+@app.post("/sensor/{sensor_id}/reading")
+async def receive_reading(sensor_id: str, reading: Reading):
+    # Each sensor maintains its own open stream
+    if sensor_id not in active_streams:
+        active_streams[sensor_id] = await analyze_tremor.open().__aenter__()
+
+    stream = active_streams[sensor_id]
+    await stream.send(reading)
+    result = await stream.recv()
+
+    if result["anomaly"]:
+        await alert_team(sensor_id, result)
+
+    return result
+
+@app.delete("/sensor/{sensor_id}/burst-end")
+async def end_burst(sensor_id: str):
+    # Sensor signals end of burst — worker disappears, memory freed
+    if sensor_id in active_streams:
+        await active_streams.pop(sensor_id).close()
 ```
 
-One worker per sensor burst. 500 can run simultaneously if needed. When the burst ends, the worker is gone. Cost when sensors are idle: zero.
+500 sensors trigger simultaneously during a major earthquake → 500 workers spin up. When the burst ends → 500 workers disappear. Idle cost between events: zero.
+
+---
 
 ### 3. E-commerce fraud detection
 
-**The problem:** Detect whether a user's session looks fraudulent. Signals: multiple shipping addresses, unusually fast purchases, device fingerprint changes, orders above a threshold in a short time.
+**The problem:** Detect fraud in real time, before a purchase is approved. Signals: multiple shipping addresses, fast purchase velocity, device switching, high spend in a short window.
 
-**The challenge:** You need to track these signals *across* events within a session, in real time, before the purchase goes through.
+**The challenge:** Each signal only makes sense in the context of the session. A single purchase to a new address is fine. The third purchase to a third different address in 5 minutes is not. You need memory across events.
 
-**With stateless Lambda:** Each purchase event arrives independently. To check "is this the 4th purchase in 5 minutes," you need to query a database. Under load, that query might take 200ms — long enough to approve the fraudulent purchase before the check completes.
+**With stateless Lambda:** Query a database on every event to check history. At 200ms per query, fraudulent purchases get approved before the check completes.
 
-**With Velo:**
+**With Velo — the full integration:**
+
 ```python
+# 1. The stream function — all signals computed from in-memory state
 @stream_fn
 async def fraud_check(events):
     purchase_times = []
-    shipping_addresses = set()
-    device_ids = set()
+    addresses = set()
+    devices = set()
     total_spend = 0.0
 
     async for event in events:
         if event.type == "purchase":
             purchase_times.append(event.timestamp)
-            shipping_addresses.add(event.shipping_address)
+            addresses.add(event.shipping_address)
             total_spend += event.amount
-
         if event.type == "page_view":
-            device_ids.add(event.device_id)
+            devices.add(event.device_id)
 
-        # Risk signals — computed instantly from in-memory state
-        recent_purchases = [t for t in purchase_times if event.timestamp - t < 300]
-        risk_score = (
-            len(recent_purchases) * 10 +      # velocity
-            len(shipping_addresses) * 15 +    # address hopping
-            len(device_ids) * 20 +            # device switching
-            (1 if total_spend > 1000 else 0) * 25  # spend threshold
+        recent = [t for t in purchase_times if event.timestamp - t < 300]
+        risk = (
+            len(recent) * 10 +
+            len(addresses) * 15 +
+            len(devices) * 20 +
+            (25 if total_spend > 1000 else 0)
         )
+        yield {"risk_score": risk, "block": risk > 50}
 
-        yield {
-            "event": event,
-            "risk_score": risk_score,
-            "block": risk_score > 50
-        }
+# 2. Session lifecycle — one stream per user session
+# Session opens on first event, closes on checkout or timeout
+user_streams: dict[str, Stream] = {}
+
+@app.post("/event")
+async def track_event(user_id: str, event: UserEvent):
+    if user_id not in user_streams:
+        user_streams[user_id] = await fraud_check.open().__aenter__()
+
+    stream = user_streams[user_id]
+    await stream.send(event)
+    result = await stream.recv()
+
+    if result["block"]:
+        await flag_account(user_id, result["risk_score"])
+        return {"status": "blocked"}
+    return {"status": "ok"}
+
+@app.post("/checkout/{user_id}")
+async def checkout(user_id: str, order: Order):
+    # Stream closes at checkout — state freed automatically
+    if user_id in user_streams:
+        await user_streams.pop(user_id).close()
+    return await process_order(order)
 ```
 
-Every signal is computed from in-memory state — no database query. The entire session state is available instantly. Sessions that look clean close quickly and the worker disappears.
+Every risk signal is computed in microseconds from in-memory state. No database queries on the hot path. Session ends → worker disappears.
+
+---
 
 ### 4. Live sports analytics
 
-**The problem:** NBA game, a player is having an exceptional quarter. The broadcast system needs to update real-time stats every time the player touches the ball — shots attempted, field goal percentage in last 5 minutes, defensive rebounds, streak of made shots.
+**The problem:** NBA broadcast. On-screen graphics need real-time player stats updated every time the player touches the ball — field goal percentage in last 5 minutes, current hot streak, defensive rebounds. Sub-second latency. No time for a database call.
 
-This needs to be *instant*. On-screen graphics update live. No time for a database round trip.
+**With Velo — the full integration:**
 
-**With Velo:**
 ```python
+# 1. The stream function — one per player per game
 @stream_fn
 async def player_stats(events):
-    shots = []          # rolling shot history
+    shots = []
     rebounds = 0
-    current_streak = 0
-    best_streak = 0
+    streak = 0
 
     async for event in events:
-        if event.type == "shot_attempt":
-            shots.append({
-                "made": event.made,
-                "time": event.game_time,
-                "distance": event.distance
-            })
-            if event.made:
-                current_streak += 1
-                best_streak = max(best_streak, current_streak)
-            else:
-                current_streak = 0
-
+        if event.type == "shot":
+            shots.append({"made": event.made, "time": event.game_time})
+            streak = streak + 1 if event.made else 0
         if event.type == "rebound":
             rebounds += 1
 
-        # Last 5 minutes of shots
         recent = [s for s in shots if event.game_time - s["time"] < 300]
-        recent_pct = sum(s["made"] for s in recent) / len(recent) if recent else 0
-
         yield {
-            "total_shots": len(shots),
-            "overall_fg_pct": sum(s["made"] for s in shots) / len(shots) if shots else 0,
-            "last_5min_fg_pct": recent_pct,
-            "current_streak": current_streak,
+            "fg_pct": sum(s["made"] for s in shots) / len(shots) if shots else 0,
+            "last_5min_fg_pct": sum(s["made"] for s in recent) / len(recent) if recent else 0,
+            "hot_streak": streak,
             "rebounds": rebounds
         }
+
+# 2. Game event router — one stream per player, opened at tip-off
+player_streams: dict[str, Stream] = {}
+
+@app.post("/game/{game_id}/event")
+async def game_event(game_id: str, event: GameEvent):
+    player_id = event.player_id
+
+    # Open a stream the first time we see a player
+    if player_id not in player_streams:
+        player_streams[player_id] = await player_stats.open().__aenter__()
+
+    stream = player_streams[player_id]
+    await stream.send(event)
+    stats = await stream.recv()
+
+    # Push updated stats to broadcast graphics in real time
+    await broadcast_to_graphics(player_id, stats)
+    return stats
+
+@app.post("/game/{game_id}/end")
+async def game_end(game_id: str):
+    # Close all player streams at end of game
+    for stream in player_streams.values():
+        await stream.close()
+    player_streams.clear()
 ```
 
-One stream per player per game. Stats update in microseconds. When the game ends, everything cleans up automatically.
+10 players on the court, 2 teams = 10 concurrent workers. Each isolated, updating in microseconds. Game ends → all 10 workers disappear.
 
 ---
 

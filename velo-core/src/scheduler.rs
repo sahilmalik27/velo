@@ -58,8 +58,8 @@ impl StreamScheduler {
         Ok(stream_id)
     }
 
-    /// Send event to a stream
-    pub fn send_event(&self, stream_id: &str, event: Vec<u8>) -> Result<(), String> {
+    /// Send event bytes to a stream's input channel (caller → worker)
+    pub fn send_input(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
         let worker_ref = self
             .workers
             .get(stream_id)
@@ -68,14 +68,48 @@ impl StreamScheduler {
         let worker = worker_ref.read();
         worker
             .input_sender()
-            .try_send(event)
-            .map_err(|e| format!("Failed to send event: {:?}", e))?;
+            .try_send(data)
+            .map_err(|e| format!("Failed to send to input: {:?}", e))?;
 
         Ok(())
     }
 
-    /// Receive event from a stream
-    pub fn recv_event(&self, stream_id: &str, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
+    /// Worker pulls next event from input channel (blocking, GIL released)
+    pub fn recv_input(&self, stream_id: &str, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
+        let worker_ref = self
+            .workers
+            .get(stream_id)
+            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+
+        let worker = worker_ref.read();
+        match worker
+            .input_channel
+            .recv_timeout(Duration::from_millis(timeout_ms))
+        {
+            Ok(data) => Ok(Some(data)),
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
+            Err(e) => Err(format!("Failed to receive from input: {:?}", e)),
+        }
+    }
+
+    /// Worker pushes result to output channel (worker → caller)
+    pub fn send_output(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
+        let worker_ref = self
+            .workers
+            .get(stream_id)
+            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+
+        let worker = worker_ref.read();
+        worker
+            .output_channel
+            .try_send(data)
+            .map_err(|e| format!("Failed to send to output: {:?}", e))?;
+
+        Ok(())
+    }
+
+    /// Caller reads result from output channel (blocking, GIL released)
+    pub fn recv_output(&self, stream_id: &str, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
         let worker_ref = self
             .workers
             .get(stream_id)
@@ -86,9 +120,9 @@ impl StreamScheduler {
             .output_receiver()
             .recv_timeout(Duration::from_millis(timeout_ms))
         {
-            Ok(event) => Ok(Some(event)),
+            Ok(data) => Ok(Some(data)),
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
-            Err(e) => Err(format!("Failed to receive event: {:?}", e)),
+            Err(e) => Err(format!("Failed to receive from output: {:?}", e)),
         }
     }
 
@@ -168,18 +202,48 @@ impl PyStreamScheduler {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
     }
 
-    /// Send event to stream
-    fn send_event(&self, stream_id: String, event: Vec<u8>) -> PyResult<()> {
-        self.inner
-            .send_event(&stream_id, event)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    /// Send event bytes to stream's input channel (caller → worker)
+    fn send_input(&self, py: Python, stream_id: String, data: Vec<u8>) -> PyResult<()> {
+        let inner = Arc::clone(&self.inner);
+        py.allow_threads(|| {
+            inner
+                .send_input(&stream_id, data)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+        })
     }
 
-    /// Receive event from stream
-    fn recv_event(&self, stream_id: String, timeout_ms: u64) -> PyResult<Option<Vec<u8>>> {
-        self.inner
-            .recv_event(&stream_id, timeout_ms)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+    /// Worker pulls next event from input channel (blocking, GIL released)
+    fn recv_input(&self, py: Python, stream_id: String, timeout_ms: u64) -> PyResult<Option<Py<pyo3::types::PyBytes>>> {
+        let inner = Arc::clone(&self.inner);
+        let result = py.allow_threads(|| {
+            inner
+                .recv_input(&stream_id, timeout_ms)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+        })?;
+
+        Ok(result.map(|data| pyo3::types::PyBytes::new_bound(py, &data).unbind()))
+    }
+
+    /// Worker pushes result to output channel (worker → caller)
+    fn send_output(&self, py: Python, stream_id: String, data: Vec<u8>) -> PyResult<()> {
+        let inner = Arc::clone(&self.inner);
+        py.allow_threads(|| {
+            inner
+                .send_output(&stream_id, data)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+        })
+    }
+
+    /// Caller reads result from output channel (blocking, GIL released)
+    fn recv_output(&self, py: Python, stream_id: String, timeout_ms: u64) -> PyResult<Option<Py<pyo3::types::PyBytes>>> {
+        let inner = Arc::clone(&self.inner);
+        let result = py.allow_threads(|| {
+            inner
+                .recv_output(&stream_id, timeout_ms)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+        })?;
+
+        Ok(result.map(|data| pyo3::types::PyBytes::new_bound(py, &data).unbind()))
     }
 
     /// Close a stream

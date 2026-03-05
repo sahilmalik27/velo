@@ -1,4 +1,4 @@
-# streamfn — API Design Spec
+# velo — API Design Spec
 
 ## Guiding Philosophy
 
@@ -22,7 +22,7 @@ One sentence. That's the mental model. Everything in the API must reinforce this
 Write it exactly like a Python async generator. `events` is an async iterable — iterate it, yield results.
 
 ```python
-from streamfn import stream_fn
+from velo import stream_fn
 
 @stream_fn
 async def running_average(events):
@@ -173,7 +173,7 @@ async def safe_parse(events):
 ## Full example (20 lines, production-ready)
 
 ```python
-from streamfn import stream_fn
+from velo import stream_fn
 
 @stream_fn
 async def track_position(events):
@@ -211,13 +211,13 @@ async with track_position.open() as stream:
 
 ---
 
-## Public API surface (everything exported from `streamfn`)
+## Public API surface (everything exported from `velo`)
 
 ```python
-from streamfn import stream_fn        # the decorator
-from streamfn import Stream           # the handle (for type hints)
-from streamfn import StreamMetrics    # metrics dataclass (for type hints)
-from streamfn import StreamConfig     # config dataclass (for advanced use)
+from velo import stream_fn        # the decorator
+from velo import Stream           # the handle (for type hints)
+from velo import StreamMetrics    # metrics dataclass (for type hints)
+from velo import StreamConfig     # config dataclass (for advanced use)
 ```
 
 Four exports. That's the entire public surface.

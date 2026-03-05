@@ -1,4 +1,4 @@
-# p2p-streamfn — Implementation Plan
+# p2p-velo — Implementation Plan
 
 ## Paper
 - **Title:** Serverless Abstractions for Short-Running, Lightweight Streams
@@ -25,11 +25,11 @@ User code (Python)
     │
     │  @stream_function decorator
     ▼
-streamfn Python API
+velo Python API
     │
     │  PyO3 FFI bindings
     ▼
-streamfn-core (Rust / tokio)
+velo-core (Rust / tokio)
     ├── StreamScheduler     — manages worker lifecycle
     ├── WorkerPool          — tokio tasks per active stream
     ├── RingBuffer<T>       — lock-free SPSC queues (crossbeam)
@@ -40,8 +40,8 @@ streamfn-core (Rust / tokio)
 ## Repository Layout
 
 ```
-p2p-streamfn/
-├── streamfn-core/              # Rust crate
+p2p-velo/
+├── velo-core/              # Rust crate
 │   ├── Cargo.toml
 │   └── src/
 │       ├── lib.rs              # PyO3 module exports
@@ -50,7 +50,7 @@ p2p-streamfn/
 │       ├── channel.rs          # Lock-free SPSC queue wrapper
 │       ├── arena.rs            # Shared memory arena (zero-copy)
 │       └── backpressure.rs     # Token bucket per stream
-├── streamfn/                   # Python package
+├── velo/                   # Python package
 │   ├── __init__.py             # Public API exports
 │   ├── decorator.py            # @stream_function + @pipeline
 │   ├── runtime.py              # Wraps Rust StreamScheduler
@@ -98,7 +98,7 @@ p2p-streamfn/
 
 ## Implementation Steps
 
-### Step 1 — Rust core (streamfn-core)
+### Step 1 — Rust core (velo-core)
 
 1. Set up Cargo workspace + maturin build config (`pyproject.toml`)
 2. Install maturin: `pip install maturin`
@@ -124,7 +124,7 @@ p2p-streamfn/
 8. Implement `lib.rs`:
    - PyO3 module: expose `PyStreamScheduler`, `PyChannel`, `PyArena`
 
-### Step 2 — Python API (streamfn/)
+### Step 2 — Python API (velo/)
 
 1. `types.py`:
    ```python
@@ -252,7 +252,7 @@ The benchmark suite is a first-class deliverable.
    - Architecture diagram
    - Benchmark results table (populated after Step 4)
    - Comparison vs Flink/Faust/Bytewax
-3. MIT LICENSE
+3. Apache-2.0
 
 ## Performance Targets
 

@@ -2,7 +2,7 @@
 
 import asyncio
 import signal
-from typing import Optional
+from typing import Any, Optional
 
 
 class GracefulShutdown:

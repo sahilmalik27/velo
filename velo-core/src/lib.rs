@@ -26,7 +26,7 @@ fn init_tracing(level: Option<String>) -> PyResult<()> {
 
 /// Python module - velo._core
 #[pymodule]
-fn velo_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<channel::PyChannel>()?;
     m.add_class::<arena::PyArena>()?;
     m.add_class::<scheduler::PyStreamScheduler>()?;

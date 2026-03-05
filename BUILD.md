@@ -21,7 +21,7 @@
 maturin develop --release
 
 # Verify installation
-python -c "import streamfn; print(streamfn.__version__)"
+python -c "import velo; print(velo.__version__)"
 ```
 
 ## Run Tests
@@ -34,7 +34,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 
 # With coverage
-pytest tests/ --cov=streamfn --cov-report=html
+pytest tests/ --cov=velo --cov-report=html
 ```
 
 ## Run Benchmarks
@@ -79,7 +79,7 @@ python examples/webhook_correlator.py
 pip install mypy
 
 # Run type checker
-mypy streamfn/
+mypy velo/
 ```
 
 ## Production Build
@@ -89,7 +89,7 @@ mypy streamfn/
 maturin build --release
 
 # Install wheel
-pip install target/wheels/streamfn-*.whl
+pip install target/wheels/velo-*.whl
 ```
 
 ## Clean

@@ -10,11 +10,57 @@ from uuid import uuid4
 from .types import StreamConfig, StreamMetrics
 from .signals import get_shutdown_handler
 
+
+def _estimate_size(obj: Any) -> int:
+    """Estimate object size without pickle (fast, never raises)."""
+    try:
+        if isinstance(obj, (bytes, bytearray)):
+            return len(obj)
+        elif isinstance(obj, str):
+            return len(obj.encode("utf-8"))
+        elif isinstance(obj, dict):
+            return sum(_estimate_size(k) + _estimate_size(v) for k, v in obj.items())
+        else:
+            return obj.__sizeof__()
+    except Exception:
+        return 0
+
+
+def _serialize(obj: Any) -> bytes:
+    """Serialize object using msgpack (if available) or pickle."""
+    if isinstance(obj, bytes):
+        return obj
+    try:
+        import msgpack
+        return msgpack.packb(obj, use_bin_type=True)
+    except Exception:
+        return pickle.dumps(obj, protocol=5)
+
+
+def _deserialize(data: bytes) -> Any:
+    """Deserialize data using msgpack (if available) or pickle."""
+    try:
+        import msgpack
+        return msgpack.unpackb(data, raw=False)
+    except Exception:
+        return pickle.loads(data)
+
 try:
     from velo._core import PyStreamScheduler, init_tracing
 except ImportError:
     PyStreamScheduler = None
     init_tracing = None
+
+
+_runtimes: dict[str, "StreamRuntime"] = {}
+
+
+def get_runtime(config: StreamConfig) -> "StreamRuntime":
+    """Get or create runtime instance for a config."""
+    key = f"{config.max_concurrent}:{config.buffer}:{config.timeout}"
+    if key not in _runtimes:
+        _runtimes[key] = StreamRuntime(config)
+    return _runtimes[key]
 
 
 class StreamRuntime:
@@ -25,7 +71,7 @@ class StreamRuntime:
     def __init__(self, config: StreamConfig) -> None:
         if PyStreamScheduler is None:
             raise RuntimeError(
-                "streamfn._core not available. Run 'maturin develop' to build Rust extension."
+                "velo._core not available. Run 'maturin develop' to build Rust extension."
             )
 
         self.config = config
@@ -83,8 +129,6 @@ class Stream:
         self._config = config
         self._worker_task: Optional[asyncio.Task] = None
         self._generator: Optional[AsyncIterator] = None
-        self._input_queue: asyncio.Queue = asyncio.Queue(maxsize=config.buffer)
-        self._output_queue: asyncio.Queue = asyncio.Queue(maxsize=config.buffer)
         self._metrics = StreamMetrics(start_time_ns=time.perf_counter_ns())
         self._closed = False
 
@@ -104,43 +148,54 @@ class Stream:
     async def _run_worker(self) -> None:
         """Worker loop that processes events through the generator."""
         try:
-            # Create an async generator from the input queue
+            # Create an async generator that reads from Rust input channel
             async def input_stream():
                 while not self._closed:
-                    try:
-                        event = await asyncio.wait_for(
-                            self._input_queue.get(), timeout=self._config.timeout
-                        )
-                        yield event
-                    except asyncio.TimeoutError:
-                        break
+                    data = await asyncio.to_thread(
+                        self._scheduler.recv_input, self.stream_id, 100
+                    )
+                    if data is None:
+                        if self._closed:
+                            return
+                        continue
+                    yield _deserialize(data)
 
             # Initialize generator
             self._generator = self._fn(input_stream())
 
-            # Process outputs
+            # Process outputs - send to Rust output channel
             async for result in self._generator:
-                await self._output_queue.put(result)
-                self._metrics._record_out(len(pickle.dumps(result)))
+                data = _serialize(result)
+                await asyncio.to_thread(
+                    self._scheduler.send_output, self.stream_id, data
+                )
+                self._metrics._record_out(_estimate_size(result))
 
         except Exception as e:
-            # Put exception in output queue for propagation
-            await self._output_queue.put(e)
+            # Serialize and send exception to output channel
+            data = _serialize(e)
+            await asyncio.to_thread(
+                self._scheduler.send_output, self.stream_id, data
+            )
 
     async def send(self, event: Any) -> None:
         """Push one event to the stream."""
         if self._closed:
             raise RuntimeError("Stream is closed")
 
-        await self._input_queue.put(event)
-        self._metrics._record_in(len(pickle.dumps(event)))
+        data = _serialize(event)
+        await asyncio.to_thread(self._scheduler.send_input, self.stream_id, data)
+        self._metrics._record_in(_estimate_size(event))
 
     async def recv(self) -> Any:
         """Pull one result from the stream (waits if not ready)."""
-        if self._closed and self._output_queue.empty():
-            raise RuntimeError("Stream is closed and no more results available")
+        data = await asyncio.to_thread(
+            self._scheduler.recv_output, self.stream_id, 5000
+        )
+        if data is None:
+            raise RuntimeError("Stream timed out or closed")
 
-        result = await self._output_queue.get()
+        result = _deserialize(data)
 
         # Check if it's an exception
         if isinstance(result, Exception):
@@ -159,20 +214,12 @@ class Stream:
 
         try:
             # Yield results as they come
-            while not self._closed or not self._output_queue.empty():
+            while not self._closed:
                 try:
-                    result = await asyncio.wait_for(self._output_queue.get(), timeout=0.1)
-                    if isinstance(result, Exception):
-                        raise result
+                    result = await self.recv()
                     yield result
-                except asyncio.TimeoutError:
+                except RuntimeError:
                     if feed_task.done():
-                        # Feeder finished, drain remaining outputs
-                        while not self._output_queue.empty():
-                            result = await self._output_queue.get()
-                            if isinstance(result, Exception):
-                                raise result
-                            yield result
                         break
         finally:
             await feed_task
@@ -183,13 +230,6 @@ class Stream:
             return
 
         self._closed = True
-
-        # Drain remaining output events
-        while not self._output_queue.empty():
-            try:
-                await asyncio.wait_for(self._output_queue.get(), timeout=0.1)
-            except asyncio.TimeoutError:
-                break
 
         # Cancel worker task
         if self._worker_task and not self._worker_task.done():

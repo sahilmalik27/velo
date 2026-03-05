@@ -343,28 +343,43 @@ python benchmarks/runner.py --scenario all --format markdown
 
 ## How it works
 
+Event Flow (data path in Rust):
+
 ```
-Your Python code
-      │
-      │  @stream_fn decorator
-      ▼
-  Velo Python API
-      │
-      │  PyO3 FFI bindings
-      ▼
-  Velo Rust Core (velo-core)
-  ┌──────────────────────────────────┐
-  │  StreamScheduler  (tokio)        │  ← microsecond stream startup
-  │  WorkerPool       (tokio tasks)  │  ← one lightweight task per stream
-  │  RingBuffer       (crossbeam)    │  ← lock-free event passing
-  │  SharedMemArena   (memmap2)      │  ← zero-copy for large payloads
-  │  BackpressureEngine              │  ← auto-throttle fast producers
-  └──────────────────────────────────┘
+  send(event)
+       │
+       ▼ serialize (msgpack/pickle)
+  Rust crossbeam SPSC input channel   ← lock-free, GIL released
+       │
+       ▼
+  Python worker (asyncio task)
+  reads from Rust channel via to_thread()
+       │
+       ▼
+  Python async generator (your code)
+       │
+       ▼ result
+  Rust crossbeam SPSC output channel  ← lock-free, GIL released
+       │
+       ▼ deserialize
+  recv() → caller
 ```
 
-- **Rust handles**: scheduling, state isolation, message passing, worker lifecycle
-- **Python handles**: your processing logic — just write generators
-- **Workers drop to zero**: idle workers are released by the tokio runtime automatically
+Rust handles:
+  - Stream lifecycle (open/close in microseconds)
+  - Channel buffering (crossbeam, lock-free)
+  - Backpressure (bounded channels)
+  - Concurrency limits (max_concurrent enforcement)
+  - Metrics aggregation
+
+Python handles:
+  - Your stream function logic (async generators)
+  - Serialization boundary (msgpack/pickle)
+  - asyncio integration (to_thread for blocking channel ops)
+
+Note: Python generator code runs under the GIL. Rust channels release the
+GIL for I/O ops. True parallelism applies to channel operations and lifecycle
+management, not to generator execution.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Stream runtime and Stream handle."""
+"""Stream runtime and Stream handle — full Rust data path."""
 
 import asyncio
 import time
@@ -10,19 +10,34 @@ from .types import StreamConfig, StreamMetrics
 from .signals import get_shutdown_handler
 
 
-def _estimate_size(obj: Any) -> int:
-    """Estimate object size without pickle (fast, never raises)."""
+def _serialize(obj: Any) -> bytes:
+    """Serialize an object to bytes for the Rust channel."""
+    if isinstance(obj, bytes):
+        return obj
+    if isinstance(obj, str):
+        return obj.encode("utf-8")
     try:
-        if isinstance(obj, (bytes, bytearray)):
-            return len(obj)
-        elif isinstance(obj, str):
-            return len(obj.encode("utf-8"))
-        elif isinstance(obj, dict):
-            return sum(_estimate_size(k) + _estimate_size(v) for k, v in obj.items())
-        else:
-            return obj.__sizeof__()
+        import msgpack
+        return b"\x01" + msgpack.packb(obj, use_bin_type=True)
     except Exception:
-        return 0
+        import pickle
+        return b"\x02" + pickle.dumps(obj, protocol=5)
+
+
+def _deserialize(data: bytes) -> Any:
+    """Deserialize bytes from the Rust channel."""
+    if not data:
+        return data
+    tag = data[0:1]
+    if tag == b"\x01":
+        import msgpack
+        return msgpack.unpackb(data[1:], raw=False)
+    elif tag == b"\x02":
+        import pickle
+        return pickle.loads(data[1:])
+    else:
+        # Raw bytes (no tag) — passthrough
+        return data
 
 
 try:
@@ -53,7 +68,6 @@ class StreamRuntime:
             )
 
         self.config = config
-        # Rust scheduler: handles stream lifecycle, concurrency limits, metrics
         self._scheduler = PyStreamScheduler(config.max_concurrent)
 
         if init_tracing is not None:
@@ -81,23 +95,7 @@ class StreamRuntime:
 
 
 class Stream:
-    """
-    Handle to an active stream.
-
-    Architecture:
-      - Rust scheduler (PyStreamScheduler): lifecycle management, concurrency
-        limits, stream registry, open/close in microseconds.
-      - asyncio.Queue: event routing between caller and worker. Lock-free in
-        the asyncio event loop; correct, no serialization overhead, no GIL
-        contention for pure-Python generators.
-      - Worker task: runs the user's async generator, reads from input queue,
-        writes results to output queue.
-
-    This hybrid gives Rust-speed lifecycle management with correct, deadlock-free
-    event routing via asyncio. Moving the full data path into Rust crossbeam
-    channels is tracked as a future optimization (requires solving GIL handoff
-    between blocking Rust recv and asyncio generator execution).
-    """
+    """Handle to an active stream — full Rust data path via crossbeam channels."""
 
     def __init__(
         self,
@@ -111,8 +109,6 @@ class Stream:
         self._scheduler = scheduler
         self._config = config
         self._worker_task: Optional[asyncio.Task] = None
-        self._input_queue: asyncio.Queue = asyncio.Queue(maxsize=config.buffer)
-        self._output_queue: asyncio.Queue = asyncio.Queue(maxsize=config.buffer)
         self._metrics = StreamMetrics(start_time_ns=time.perf_counter_ns())
         self._closed = False
 
@@ -127,40 +123,48 @@ class Stream:
         self._worker_task = asyncio.create_task(self._run_worker())
 
     async def _run_worker(self) -> None:
-        """Worker: pulls events from input queue, runs user generator, pushes results."""
+        """Worker: pulls events from Rust input channel, runs user generator, pushes results."""
         try:
             async def input_stream() -> AsyncIterator[Any]:
-                while not self._closed:
-                    try:
-                        event = await asyncio.wait_for(
-                            self._input_queue.get(),
-                            timeout=self._config.timeout,
-                        )
-                        yield event
-                    except asyncio.TimeoutError:
-                        # Idle timeout — close stream properly (Fix 1: zombie stream)
-                        asyncio.create_task(self.close())
-                        return
+                while True:
+                    data = await asyncio.to_thread(
+                        self._scheduler.recv_input, self.stream_id, 50
+                    )
+                    if data is None:
+                        if self._closed:
+                            return  # channel disconnected → exit
+                        continue  # timeout, keep polling
+                    yield _deserialize(data)
 
             async for result in self._fn(input_stream()):
-                await self._output_queue.put(result)
-                self._metrics._record_out(_estimate_size(result))
+                data = _serialize(result)
+                self._scheduler.send_output_nowait(self.stream_id, data)
+                self._metrics._record_out(len(data))
 
         except Exception as exc:
-            await self._output_queue.put(exc)
+            try:
+                self._scheduler.send_output_nowait(
+                    self.stream_id, _serialize(exc)
+                )
+            except Exception:
+                pass
 
     async def send(self, event: Any) -> None:
         """Push one event into the stream."""
         if self._closed:
             raise RuntimeError("Stream is closed")
-        await self._input_queue.put(event)
-        self._metrics._record_in(_estimate_size(event))
+        data = _serialize(event)
+        await asyncio.to_thread(self._scheduler.send_input, self.stream_id, data)
+        self._metrics._record_in(len(data))
 
     async def recv(self) -> Any:
         """Pull one result from the stream (waits if not ready)."""
-        if self._closed and self._output_queue.empty():
-            raise RuntimeError("Stream is closed and output queue is empty")
-        result = await self._output_queue.get()
+        data = await asyncio.to_thread(
+            self._scheduler.recv_output, self.stream_id, 5000
+        )
+        if data is None:
+            raise RuntimeError("Stream closed before result was ready")
+        result = _deserialize(data)
         if isinstance(result, Exception):
             raise result
         return result
@@ -177,17 +181,23 @@ class Stream:
         feed_task = asyncio.create_task(_feeder())
 
         try:
-            while not self._closed or not self._output_queue.empty():
+            while not self._closed:
                 try:
-                    result = await asyncio.wait_for(
-                        self._output_queue.get(), timeout=0.05
+                    data = await asyncio.to_thread(
+                        self._scheduler.recv_output, self.stream_id, 50
                     )
+                    if data is None:
+                        if feed_task.done():
+                            break
+                        continue
+                    result = _deserialize(data)
                     if isinstance(result, Exception):
                         raise result
                     yield result
-                except asyncio.TimeoutError:
-                    if feed_task.done() and self._output_queue.empty():
+                except RuntimeError:
+                    if feed_task.done():
                         break
+                    raise
         finally:
             if not feed_task.done():
                 feed_task.cancel()
@@ -197,22 +207,23 @@ class Stream:
                     pass
 
     async def close(self) -> None:
-        """Drain and close the stream."""
+        """Close the stream — drops Rust input channel, worker exits on Disconnected."""
         if self._closed:
             return
         self._closed = True
 
-        if self._worker_task and not self._worker_task.done():
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except (asyncio.CancelledError, Exception):
-                pass
-
+        # Drops input_tx in Rust → worker's recv_input returns Disconnected → exits
         try:
             self._scheduler.close_stream(self.stream_id)
         except Exception:
             pass
+
+        # Give worker up to 100ms to exit naturally
+        if self._worker_task and not self._worker_task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(self._worker_task), timeout=0.1)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                self._worker_task.cancel()
 
     async def __aenter__(self) -> "Stream":
         return self

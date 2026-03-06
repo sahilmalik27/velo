@@ -1,8 +1,5 @@
-mod arena;
-mod backpressure;
 mod channel;
 mod scheduler;
-mod worker;
 
 use pyo3::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -28,7 +25,6 @@ fn init_tracing(level: Option<String>) -> PyResult<()> {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<channel::PyChannel>()?;
-    m.add_class::<arena::PyArena>()?;
     m.add_class::<scheduler::PyStreamScheduler>()?;
     m.add_function(wrap_pyfunction!(init_tracing, m)?)?;
 

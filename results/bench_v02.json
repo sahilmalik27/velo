@@ -1,0 +1,112 @@
+{
+  "system_info": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.14.0-1015-nvidia-aarch64-with-glibc2.39",
+    "processor": "aarch64",
+    "cpu_count": 20,
+    "cpu_count_physical": 20,
+    "memory_total_gb": 119.69732666015625,
+    "timestamp": 1772827812.71366
+  },
+  "scenarios": [
+    {
+      "scenario": "throughput",
+      "success": true,
+      "results": {
+        "payload_sizes": {
+          "64B": {
+            "events_per_sec": 5685.420115249911,
+            "mb_per_sec": 0.3470105050811713,
+            "elapsed_sec": 1.758884971961379
+          },
+          "1024B": {
+            "events_per_sec": 4637.429936635161,
+            "mb_per_sec": 4.528740172495274,
+            "elapsed_sec": 2.1563668102025986
+          },
+          "65536B": {
+            "events_per_sec": 541.3468559634413,
+            "mb_per_sec": 33.83417849771508,
+            "elapsed_sec": 18.47244495805353
+          }
+        },
+        "stream_sizes": {
+          "10_events": {
+            "events_per_sec": 96.23038526386877,
+            "elapsed_sec": 0.10391728114336729
+          },
+          "100_events": {
+            "events_per_sec": 794.386074697814,
+            "elapsed_sec": 0.12588337482884526
+          },
+          "1000_events": {
+            "events_per_sec": 3298.8654463247854,
+            "elapsed_sec": 0.3031345219351351
+          },
+          "10000_events": {
+            "events_per_sec": 4763.114964908004,
+            "elapsed_sec": 2.0994664360769093
+          }
+        },
+        "events_per_sec": 5685.420115249911
+      }
+    },
+    {
+      "scenario": "latency",
+      "success": true,
+      "results": {
+        "p50_us": 212.369,
+        "p95_us": 378.291,
+        "p99_us": 485.971,
+        "max_us": 762.372,
+        "min_us": 79.968,
+        "mean_us": 228.7179921
+      }
+    },
+    {
+      "scenario": "startup",
+      "success": true,
+      "results": {
+        "min_us": 50336.918,
+        "mean_us": 50919.495915,
+        "p50_us": 50900.777,
+        "p95_us": 51283.74,
+        "p99_us": 51580.67,
+        "max_us": 51956.977
+      }
+    },
+    {
+      "scenario": "concurrency",
+      "success": false,
+      "error": "Stream closed before result was ready"
+    },
+    {
+      "scenario": "memory",
+      "success": true,
+      "results": {
+        "memory_by_streams": {
+          "10_streams": {
+            "total_mb": 44.43359375,
+            "delta_mb": 0.12109375,
+            "per_stream_kb": 12.4
+          },
+          "100_streams": {
+            "total_mb": 44.65234375,
+            "delta_mb": 0.33984375,
+            "per_stream_kb": 3.48
+          },
+          "1000_streams": {
+            "total_mb": 54.42578125,
+            "delta_mb": 10.11328125,
+            "per_stream_kb": 10.356
+          }
+        },
+        "baseline_mb": 44.3125,
+        "final_mb": 54.42578125,
+        "recovered_mb": 0.0,
+        "peak_mb": 54.42578125
+      }
+    }
+  ],
+  "comparisons": []
+}

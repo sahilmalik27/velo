@@ -1,37 +1,39 @@
-use crate::worker::{StreamWorker, WorkerConfig, WorkerState};
+use crossbeam::channel::{bounded, Receiver, Sender};
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use pyo3::prelude::*;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::runtime::Runtime;
-use tracing::{debug, error, info, warn};
+use tracing::info;
 
-/// Main scheduler that manages stream worker lifecycle
-#[pyclass]
-pub struct PyStreamScheduler {
-    inner: Arc<StreamScheduler>,
-    runtime: Arc<Runtime>,
+/// Channel endpoints for a single stream.
+/// Input: scheduler (Sender) → worker (Receiver)
+/// Output: worker (Sender) → caller (Receiver)
+pub struct StreamChannels {
+    pub input_tx: Sender<Vec<u8>>,
+    pub input_rx: Receiver<Vec<u8>>,
+    pub output_tx: Sender<Vec<u8>>,
+    pub output_rx: Receiver<Vec<u8>>,
 }
 
+/// Main scheduler that manages stream channel lifecycle.
 pub struct StreamScheduler {
-    workers: DashMap<String, Arc<RwLock<StreamWorker>>>,
-    config: WorkerConfig,
-    active_count: Arc<parking_lot::Mutex<usize>>,
+    streams: DashMap<String, StreamChannels>,
+    active_count: parking_lot::Mutex<usize>,
     max_concurrent: usize,
+    buffer_size: usize,
 }
 
 impl StreamScheduler {
-    pub fn new(max_concurrent: usize, config: WorkerConfig) -> Self {
+    pub fn new(max_concurrent: usize, buffer_size: usize) -> Self {
         Self {
-            workers: DashMap::new(),
-            config,
-            active_count: Arc::new(parking_lot::Mutex::new(0)),
+            streams: DashMap::new(),
+            active_count: parking_lot::Mutex::new(0),
             max_concurrent,
+            buffer_size,
         }
     }
 
-    /// Open a new stream (microsecond startup)
+    /// Open a new stream — create channels, insert into DashMap, enforce max_concurrent.
     pub fn open_stream(&self, stream_id: String) -> Result<String, String> {
         let current_count = *self.active_count.lock();
         if current_count >= self.max_concurrent {
@@ -41,15 +43,22 @@ impl StreamScheduler {
             ));
         }
 
-        if self.workers.contains_key(&stream_id) {
+        if self.streams.contains_key(&stream_id) {
             return Err(format!("Stream {} already exists", stream_id));
         }
 
-        let mut worker = StreamWorker::new(stream_id.clone(), self.config.clone());
-        let _shutdown_rx = worker.start();
+        let (input_tx, input_rx) = bounded(self.buffer_size);
+        let (output_tx, output_rx) = bounded(self.buffer_size);
 
-        self.workers
-            .insert(stream_id.clone(), Arc::new(RwLock::new(worker)));
+        self.streams.insert(
+            stream_id.clone(),
+            StreamChannels {
+                input_tx,
+                input_rx,
+                output_tx,
+                output_rx,
+            },
+        );
 
         let mut count = self.active_count.lock();
         *count += 1;
@@ -58,122 +67,102 @@ impl StreamScheduler {
         Ok(stream_id)
     }
 
-    /// Send event bytes to a stream's input channel (caller → worker)
-    pub fn send_input(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
-        let worker_ref = self
-            .workers
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        let worker = worker_ref.read();
-        worker
-            .input_sender()
-            .try_send(data)
-            .map_err(|e| format!("Failed to send to input: {:?}", e))?;
-
-        Ok(())
-    }
-
-    /// Worker pulls next event from input channel (blocking, GIL released)
-    pub fn recv_input(&self, stream_id: &str, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
-        let worker_ref = self
-            .workers
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        let worker = worker_ref.read();
-        match worker
-            .input_channel
-            .recv_timeout(Duration::from_millis(timeout_ms))
-        {
-            Ok(data) => Ok(Some(data)),
-            Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
-            Err(e) => Err(format!("Failed to receive from input: {:?}", e)),
-        }
-    }
-
-    /// Worker pushes result to output channel (worker → caller)
-    pub fn send_output(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
-        let worker_ref = self
-            .workers
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        let worker = worker_ref.read();
-        worker
-            .output_channel
-            .try_send(data)
-            .map_err(|e| format!("Failed to send to output: {:?}", e))?;
-
-        Ok(())
-    }
-
-    /// Caller reads result from output channel (blocking, GIL released)
-    pub fn recv_output(&self, stream_id: &str, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
-        let worker_ref = self
-            .workers
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        let worker = worker_ref.read();
-        match worker
-            .output_receiver()
-            .recv_timeout(Duration::from_millis(timeout_ms))
-        {
-            Ok(data) => Ok(Some(data)),
-            Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
-            Err(e) => Err(format!("Failed to receive from output: {:?}", e)),
-        }
-    }
-
-    /// Close a stream (drain and cleanup)
-    pub async fn close_stream(&self, stream_id: &str) -> Result<(), String> {
-        let worker_ref = self
-            .workers
+    /// Close a stream — remove from DashMap. Dropping input_tx signals Disconnected to worker.
+    pub fn close_stream(&self, stream_id: &str) -> Result<(), String> {
+        self.streams
             .remove(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?
-            .1;
-
-        let mut worker = worker_ref.write();
-        worker.drain().await;
-
+            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+        // Dropping StreamChannels here drops input_tx → worker sees Disconnected
         let mut count = self.active_count.lock();
         *count = count.saturating_sub(1);
-
         info!("Closed stream: {} (active: {})", stream_id, *count);
         Ok(())
     }
 
-    /// Get count of active streams
+    /// Send event bytes to a stream's input channel (caller → worker).
+    /// Blocking send with timeout for backpressure.
+    pub fn send_input(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
+        let entry = self
+            .streams
+            .get(stream_id)
+            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+
+        entry
+            .input_tx
+            .send_timeout(data, Duration::from_millis(5000))
+            .map_err(|e| format!("Failed to send to input: {:?}", e))
+    }
+
+    /// Worker pulls next event from input channel (blocking with timeout, GIL released).
+    /// Returns None on both Timeout and Disconnected.
+    pub fn recv_input(
+        &self,
+        stream_id: &str,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let entry = self
+            .streams
+            .get(stream_id)
+            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+
+        match entry
+            .input_rx
+            .recv_timeout(Duration::from_millis(timeout_ms))
+        {
+            Ok(data) => Ok(Some(data)),
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => Ok(None),
+        }
+    }
+
+    /// Non-blocking push from worker to output channel.
+    pub fn send_output_nowait(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
+        let entry = self
+            .streams
+            .get(stream_id)
+            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+
+        entry
+            .output_tx
+            .try_send(data)
+            .map_err(|e| format!("Output channel error: {:?}", e))
+    }
+
+    /// Caller reads result from output channel (blocking with timeout, GIL released).
+    pub fn recv_output(
+        &self,
+        stream_id: &str,
+        timeout_ms: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let entry = self
+            .streams
+            .get(stream_id)
+            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+
+        match entry
+            .output_rx
+            .recv_timeout(Duration::from_millis(timeout_ms))
+        {
+            Ok(data) => Ok(Some(data)),
+            Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => Ok(None),
+        }
+    }
+
+    /// Get count of active streams.
     pub fn active_streams(&self) -> usize {
         *self.active_count.lock()
     }
 
-    /// List all stream IDs
+    /// List all stream IDs.
     pub fn list_streams(&self) -> Vec<String> {
-        self.workers.iter().map(|r| r.key().clone()).collect()
+        self.streams.iter().map(|r| r.key().clone()).collect()
     }
+}
 
-    /// Cleanup idle streams (scale-to-zero)
-    pub async fn cleanup_idle_streams(&self) {
-        let idle_streams: Vec<String> = self
-            .workers
-            .iter()
-            .filter(|r| {
-                let worker = r.value().read();
-                worker.is_idle() && worker.state == WorkerState::Running
-            })
-            .map(|r| r.key().clone())
-            .collect();
-
-        for stream_id in idle_streams {
-            if let Err(e) = self.close_stream(&stream_id).await {
-                warn!("Failed to cleanup idle stream {}: {}", stream_id, e);
-            } else {
-                debug!("Cleaned up idle stream: {}", stream_id);
-            }
-        }
-    }
+#[pyclass]
+pub struct PyStreamScheduler {
+    inner: Arc<StreamScheduler>,
 }
 
 #[pymethods]
@@ -181,17 +170,8 @@ impl PyStreamScheduler {
     #[new]
     fn new(max_concurrent: Option<usize>) -> PyResult<Self> {
         let max_concurrent = max_concurrent.unwrap_or(1000);
-        let config = WorkerConfig::default();
-
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .enable_all()
-            .build()
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to create runtime: {}", e)))?;
-
         Ok(Self {
-            inner: Arc::new(StreamScheduler::new(max_concurrent, config)),
-            runtime: Arc::new(runtime),
+            inner: Arc::new(StreamScheduler::new(max_concurrent, 256)),
         })
     }
 
@@ -202,7 +182,7 @@ impl PyStreamScheduler {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
     }
 
-    /// Send event bytes to stream's input channel (caller → worker)
+    /// Send event bytes to stream's input channel (caller → worker, GIL released)
     fn send_input(&self, py: Python, stream_id: String, data: Vec<u8>) -> PyResult<()> {
         let inner = Arc::clone(&self.inner);
         py.allow_threads(|| {
@@ -213,7 +193,12 @@ impl PyStreamScheduler {
     }
 
     /// Worker pulls next event from input channel (blocking, GIL released)
-    fn recv_input(&self, py: Python, stream_id: String, timeout_ms: u64) -> PyResult<Option<Py<pyo3::types::PyBytes>>> {
+    fn recv_input(
+        &self,
+        py: Python,
+        stream_id: String,
+        timeout_ms: u64,
+    ) -> PyResult<Option<Py<pyo3::types::PyBytes>>> {
         let inner = Arc::clone(&self.inner);
         let result = py.allow_threads(|| {
             inner
@@ -224,18 +209,20 @@ impl PyStreamScheduler {
         Ok(result.map(|data| pyo3::types::PyBytes::new_bound(py, &data).unbind()))
     }
 
-    /// Worker pushes result to output channel (worker → caller)
-    fn send_output(&self, py: Python, stream_id: String, data: Vec<u8>) -> PyResult<()> {
-        let inner = Arc::clone(&self.inner);
-        py.allow_threads(|| {
-            inner
-                .send_output(&stream_id, data)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
-        })
+    /// Worker pushes result to output channel (non-blocking, sync)
+    fn send_output_nowait(&self, stream_id: String, data: Vec<u8>) -> PyResult<()> {
+        self.inner
+            .send_output_nowait(&stream_id, data)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
     }
 
     /// Caller reads result from output channel (blocking, GIL released)
-    fn recv_output(&self, py: Python, stream_id: String, timeout_ms: u64) -> PyResult<Option<Py<pyo3::types::PyBytes>>> {
+    fn recv_output(
+        &self,
+        py: Python,
+        stream_id: String,
+        timeout_ms: u64,
+    ) -> PyResult<Option<Py<pyo3::types::PyBytes>>> {
         let inner = Arc::clone(&self.inner);
         let result = py.allow_threads(|| {
             inner
@@ -246,18 +233,13 @@ impl PyStreamScheduler {
         Ok(result.map(|data| pyo3::types::PyBytes::new_bound(py, &data).unbind()))
     }
 
-    /// Close a stream
+    /// Close a stream (sync, GIL released)
     fn close_stream(&self, py: Python, stream_id: String) -> PyResult<()> {
         let inner = Arc::clone(&self.inner);
-        let runtime = Arc::clone(&self.runtime);
-
         py.allow_threads(|| {
-            runtime.block_on(async {
-                inner
-                    .close_stream(&stream_id)
-                    .await
-                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
-            })
+            inner
+                .close_stream(&stream_id)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
         })
     }
 
@@ -270,19 +252,6 @@ impl PyStreamScheduler {
     fn list_streams(&self) -> Vec<String> {
         self.inner.list_streams()
     }
-
-    /// Cleanup idle streams
-    fn cleanup_idle_streams(&self, py: Python) -> PyResult<()> {
-        let inner = Arc::clone(&self.inner);
-        let runtime = Arc::clone(&self.runtime);
-
-        py.allow_threads(|| {
-            runtime.block_on(async {
-                inner.cleanup_idle_streams().await;
-                Ok(())
-            })
-        })
-    }
 }
 
 #[cfg(test)]
@@ -291,28 +260,92 @@ mod tests {
 
     #[test]
     fn test_scheduler_creation() {
-        let config = WorkerConfig::default();
-        let scheduler = StreamScheduler::new(100, config);
+        let scheduler = StreamScheduler::new(100, 256);
         assert_eq!(scheduler.active_streams(), 0);
     }
 
     #[test]
     fn test_open_stream() {
-        let config = WorkerConfig::default();
-        let scheduler = StreamScheduler::new(100, config);
+        let scheduler = StreamScheduler::new(100, 256);
         let result = scheduler.open_stream("test-1".to_string());
         assert!(result.is_ok());
         assert_eq!(scheduler.active_streams(), 1);
     }
 
-    #[tokio::test]
-    async fn test_close_stream() {
-        let config = WorkerConfig::default();
-        let scheduler = StreamScheduler::new(100, config);
+    #[test]
+    fn test_close_stream() {
+        let scheduler = StreamScheduler::new(100, 256);
         scheduler.open_stream("test-1".to_string()).unwrap();
         assert_eq!(scheduler.active_streams(), 1);
 
-        scheduler.close_stream("test-1").await.unwrap();
+        scheduler.close_stream("test-1").unwrap();
         assert_eq!(scheduler.active_streams(), 0);
+    }
+
+    #[test]
+    fn test_send_recv_input() {
+        let scheduler = StreamScheduler::new(100, 256);
+        scheduler.open_stream("test-1".to_string()).unwrap();
+
+        scheduler
+            .send_input("test-1", vec![1, 2, 3])
+            .unwrap();
+
+        let result = scheduler.recv_input("test-1", 100).unwrap();
+        assert_eq!(result, Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn test_send_recv_output() {
+        let scheduler = StreamScheduler::new(100, 256);
+        scheduler.open_stream("test-1".to_string()).unwrap();
+
+        scheduler
+            .send_output_nowait("test-1", vec![4, 5, 6])
+            .unwrap();
+
+        let result = scheduler.recv_output("test-1", 100).unwrap();
+        assert_eq!(result, Some(vec![4, 5, 6]));
+    }
+
+    #[test]
+    fn test_recv_input_timeout() {
+        let scheduler = StreamScheduler::new(100, 256);
+        scheduler.open_stream("test-1".to_string()).unwrap();
+
+        let result = scheduler.recv_input("test-1", 10).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_close_disconnects_input() {
+        let scheduler = StreamScheduler::new(100, 256);
+        scheduler.open_stream("test-1".to_string()).unwrap();
+
+        // Grab a clone of the input_rx before closing
+        let input_rx = scheduler
+            .streams
+            .get("test-1")
+            .unwrap()
+            .input_rx
+            .clone();
+
+        scheduler.close_stream("test-1").unwrap();
+
+        // After close, recv on the cloned rx should return Disconnected
+        match input_rx.recv_timeout(Duration::from_millis(10)) {
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {} // expected
+            other => panic!("Expected Disconnected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_max_concurrent() {
+        let scheduler = StreamScheduler::new(2, 256);
+        scheduler.open_stream("s1".to_string()).unwrap();
+        scheduler.open_stream("s2".to_string()).unwrap();
+
+        let result = scheduler.open_stream("s3".to_string());
+        assert!(result.is_err());
     }
 }

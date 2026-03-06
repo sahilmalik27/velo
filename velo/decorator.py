@@ -2,7 +2,7 @@
 
 from typing import Any, AsyncIterator, Callable, List, Optional
 
-from .runtime import Stream, StreamRuntime
+from .runtime import Stream, StreamRuntime, get_runtime
 from .types import StreamConfig
 
 
@@ -67,7 +67,7 @@ class StreamFunctionHandle:
     def runtime(self) -> StreamRuntime:
         """Get or create runtime."""
         if self._runtime is None:
-            self._runtime = StreamRuntime.get_instance(self._config)
+            self._runtime = get_runtime(self._config)
         return self._runtime
 
     async def run(self, iterable: AsyncIterator[Any]) -> List[Any]:

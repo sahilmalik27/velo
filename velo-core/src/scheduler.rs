@@ -80,35 +80,38 @@ impl StreamScheduler {
     }
 
     /// Send event bytes to a stream's input channel (caller → worker).
-    /// Blocking send with timeout for backpressure.
+    /// Clones the Sender out of DashMap first so the read lock is NOT held
+    /// during the blocking send_timeout (prevents deadlock with close_stream).
     pub fn send_input(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
-        let entry = self
-            .streams
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        entry
-            .input_tx
-            .send_timeout(data, Duration::from_millis(5000))
+        let tx = {
+            let entry = self
+                .streams
+                .get(stream_id)
+                .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+            entry.input_tx.clone()
+        }; // DashMap read lock released here
+        tx.send_timeout(data, Duration::from_millis(5000))
             .map_err(|e| format!("Failed to send to input: {:?}", e))
     }
 
     /// Worker pulls next event from input channel (blocking with timeout, GIL released).
+    /// Clones the Receiver out of DashMap first so the read lock is NOT held
+    /// during recv_timeout — this prevents close_stream (write lock) from blocking
+    /// for the full timeout duration.
     /// Returns None on both Timeout and Disconnected.
     pub fn recv_input(
         &self,
         stream_id: &str,
         timeout_ms: u64,
     ) -> Result<Option<Vec<u8>>, String> {
-        let entry = self
-            .streams
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        match entry
-            .input_rx
-            .recv_timeout(Duration::from_millis(timeout_ms))
-        {
+        let rx = {
+            let entry = self
+                .streams
+                .get(stream_id)
+                .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+            entry.input_rx.clone()
+        }; // DashMap read lock released here
+        match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(data) => Ok(Some(data)),
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
             Err(crossbeam::channel::RecvTimeoutError::Disconnected) => Ok(None),
@@ -117,32 +120,32 @@ impl StreamScheduler {
 
     /// Non-blocking push from worker to output channel.
     pub fn send_output_nowait(&self, stream_id: &str, data: Vec<u8>) -> Result<(), String> {
-        let entry = self
-            .streams
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        entry
-            .output_tx
-            .try_send(data)
+        let tx = {
+            let entry = self
+                .streams
+                .get(stream_id)
+                .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+            entry.output_tx.clone()
+        }; // DashMap read lock released here
+        tx.try_send(data)
             .map_err(|e| format!("Output channel error: {:?}", e))
     }
 
     /// Caller reads result from output channel (blocking with timeout, GIL released).
+    /// Clones Receiver out of DashMap first — same pattern as recv_input.
     pub fn recv_output(
         &self,
         stream_id: &str,
         timeout_ms: u64,
     ) -> Result<Option<Vec<u8>>, String> {
-        let entry = self
-            .streams
-            .get(stream_id)
-            .ok_or_else(|| format!("Stream {} not found", stream_id))?;
-
-        match entry
-            .output_rx
-            .recv_timeout(Duration::from_millis(timeout_ms))
-        {
+        let rx = {
+            let entry = self
+                .streams
+                .get(stream_id)
+                .ok_or_else(|| format!("Stream {} not found", stream_id))?;
+            entry.output_rx.clone()
+        }; // DashMap read lock released here
+        match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(data) => Ok(Some(data)),
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
             Err(crossbeam::channel::RecvTimeoutError::Disconnected) => Ok(None),

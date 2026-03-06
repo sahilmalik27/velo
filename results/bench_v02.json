@@ -6,7 +6,7 @@
     "cpu_count": 20,
     "cpu_count_physical": 20,
     "memory_total_gb": 119.69732666015625,
-    "timestamp": 1772827812.71366
+    "timestamp": 1772828522.0702047
   },
   "scenarios": [
     {
@@ -15,70 +15,94 @@
       "results": {
         "payload_sizes": {
           "64B": {
-            "events_per_sec": 5685.420115249911,
-            "mb_per_sec": 0.3470105050811713,
-            "elapsed_sec": 1.758884971961379
+            "events_per_sec": 5900.740174837309,
+            "mb_per_sec": 0.36015259856184745,
+            "elapsed_sec": 1.6947026480920613
           },
           "1024B": {
-            "events_per_sec": 4637.429936635161,
-            "mb_per_sec": 4.528740172495274,
-            "elapsed_sec": 2.1563668102025986
+            "events_per_sec": 4982.569429905733,
+            "mb_per_sec": 4.8657904588923175,
+            "elapsed_sec": 2.0069966190494597
           },
           "65536B": {
-            "events_per_sec": 541.3468559634413,
-            "mb_per_sec": 33.83417849771508,
-            "elapsed_sec": 18.47244495805353
+            "events_per_sec": 541.5189172974997,
+            "mb_per_sec": 33.84493233109373,
+            "elapsed_sec": 18.466575553640723
           }
         },
         "stream_sizes": {
           "10_events": {
-            "events_per_sec": 96.23038526386877,
-            "elapsed_sec": 0.10391728114336729
+            "events_per_sec": 184.70680102930854,
+            "elapsed_sec": 0.05413985811173916
           },
           "100_events": {
-            "events_per_sec": 794.386074697814,
-            "elapsed_sec": 0.12588337482884526
+            "events_per_sec": 1314.9766510110692,
+            "elapsed_sec": 0.07604697765782475
           },
           "1000_events": {
-            "events_per_sec": 3298.8654463247854,
-            "elapsed_sec": 0.3031345219351351
+            "events_per_sec": 3926.77204645171,
+            "elapsed_sec": 0.25466209603473544
           },
           "10000_events": {
-            "events_per_sec": 4763.114964908004,
-            "elapsed_sec": 2.0994664360769093
+            "events_per_sec": 4720.157221420355,
+            "elapsed_sec": 2.1185734989121556
           }
         },
-        "events_per_sec": 5685.420115249911
+        "events_per_sec": 5900.740174837309
       }
     },
     {
       "scenario": "latency",
       "success": true,
       "results": {
-        "p50_us": 212.369,
-        "p95_us": 378.291,
-        "p99_us": 485.971,
-        "max_us": 762.372,
-        "min_us": 79.968,
-        "mean_us": 228.7179921
+        "p50_us": 212.977,
+        "p95_us": 377.536,
+        "p99_us": 478.817,
+        "max_us": 955.105,
+        "min_us": 70.481,
+        "mean_us": 230.88485380000003
       }
     },
     {
       "scenario": "startup",
       "success": true,
       "results": {
-        "min_us": 50336.918,
-        "mean_us": 50919.495915,
-        "p50_us": 50900.777,
-        "p95_us": 51283.74,
-        "p99_us": 51580.67,
-        "max_us": 51956.977
+        "min_us": 136.736,
+        "mean_us": 399.746104,
+        "p50_us": 383.809,
+        "p95_us": 599.489,
+        "p99_us": 720.609,
+        "max_us": 757.105
       }
     },
     {
       "scenario": "concurrency",
-      "success": false,
-      "error": "Stream closed before result was ready"
+      "success": true,
+      "results": {
+        "concurrency_levels": {
+          "1_streams": {
+            "total_events_per_sec": 4693.414637808456,
+            "events_per_sec_per_stream": 4693.414637808456,
+            "elapsed_sec": 0.021306449081748724
+          },
+          "10_streams": {
+            "total_events_per_sec": 7621.624405647184,
+            "events_per_sec_per_stream": 762.1624405647184,
+            "elapsed_sec": 0.13120562583208084
+          },
+          "100_streams": {
+            "total_events_per_sec": 584.0484202316767,
+            "events_per_sec_per_stream": 5.840484202316767,
+            "elapsed_sec": 17.121868073940277
+          },
+          "1000_streams": {
+            "total_events_per_sec": 470.00709735171023,
+            "events_per_sec_per_stream": 0.4700070973517102,
+            "elapsed_sec": 212.76274457015097
+          }
+        },
+        "max_streams": 1000
+      }
     },
     {
       "scenario": "memory",
@@ -86,25 +110,25 @@
       "results": {
         "memory_by_streams": {
           "10_streams": {
-            "total_mb": 44.43359375,
-            "delta_mb": 0.12109375,
-            "per_stream_kb": 12.4
+            "total_mb": 60.109375,
+            "delta_mb": 0.109375,
+            "per_stream_kb": 11.2
           },
           "100_streams": {
-            "total_mb": 44.65234375,
-            "delta_mb": 0.33984375,
-            "per_stream_kb": 3.48
+            "total_mb": 60.328125,
+            "delta_mb": 0.328125,
+            "per_stream_kb": 3.36
           },
           "1000_streams": {
-            "total_mb": 54.42578125,
-            "delta_mb": 10.11328125,
-            "per_stream_kb": 10.356
+            "total_mb": 60.35546875,
+            "delta_mb": 0.35546875,
+            "per_stream_kb": 0.364
           }
         },
-        "baseline_mb": 44.3125,
-        "final_mb": 54.42578125,
+        "baseline_mb": 60.0,
+        "final_mb": 60.35546875,
         "recovered_mb": 0.0,
-        "peak_mb": 54.42578125
+        "peak_mb": 60.35546875
       }
     }
   ],

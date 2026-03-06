@@ -128,8 +128,10 @@ Batching is a targeted, low-risk change that gets throughput to a competitive ra
 
 ## Decision
 
-_To be decided by Sahil._
+**2026-03-06 — Option C selected.**
+
+Velo's target workload is agent runtimes, chat backends, and streaming inference. At those use cases, model inference time dominates by orders of magnitude. 6K ev/s with 0.48ms P99 latency is the right tradeoff. Throughput optimization deferred until there's a concrete use case that requires it.
 
 - [ ] Option A — dedicated thread per stream
 - [ ] Option B — batch channel calls
-- [ ] Option C — accept current throughput, document honestly
+- [x] Option C — accept current throughput, document honestly

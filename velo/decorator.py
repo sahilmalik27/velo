@@ -2,7 +2,7 @@
 
 from typing import Any, AsyncIterator, Callable, List, Optional
 
-from .runtime import Stream, StreamRuntime, get_runtime
+from .runtime import StreamRuntime, get_runtime
 from .types import StreamConfig
 
 
@@ -99,13 +99,16 @@ class StreamFunctionHandle:
     def open(self) -> Any:
         """Live mode - open a stream and return async context manager.
 
+        Usage: async with my_fn.open() as stream: ...
+
         Returns:
             Async context manager that yields a Stream handle
         """
-        return self.runtime.open_stream(self._fn)
+        return self.runtime.open_stream(self._fn)  # @asynccontextmanager — use directly
 
     def __or__(self, other: "StreamFunctionHandle") -> "StreamFunctionHandle":
         """Pipe composition: fn1 | fn2 chains output of fn1 to input of fn2."""
+
         async def composed_fn(events: AsyncIterator[Any]) -> AsyncIterator[Any]:
             # Run first function on events
             intermediate = self._fn(events)

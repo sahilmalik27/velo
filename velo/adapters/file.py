@@ -36,7 +36,7 @@ class FileAdapter:
         loop = asyncio.get_event_loop()
 
         def read_lines():
-            with open(path, "r", encoding=encoding) as f:
+            with open(path, encoding=encoding) as f:
                 for line in f:
                     yield line.rstrip("\n\r")
 

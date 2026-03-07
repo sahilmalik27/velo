@@ -7,7 +7,6 @@ from typing import Any, AsyncIterator, Callable, Optional
 from uuid import uuid4
 
 from .types import StreamConfig, StreamMetrics
-from .signals import get_shutdown_handler
 
 
 def _serialize(obj: Any) -> bytes:
@@ -18,9 +17,11 @@ def _serialize(obj: Any) -> bytes:
         return obj.encode("utf-8")
     try:
         import msgpack
+
         return b"\x01" + msgpack.packb(obj, use_bin_type=True)
     except Exception:
         import pickle
+
         return b"\x02" + pickle.dumps(obj, protocol=5)
 
 
@@ -31,9 +32,11 @@ def _deserialize(data: bytes) -> Any:
     tag = data[0:1]
     if tag == b"\x01":
         import msgpack
+
         return msgpack.unpackb(data[1:], raw=False)
     elif tag == b"\x02":
         import pickle
+
         return pickle.loads(data[1:])
     else:
         # Raw bytes with no tag — attempt utf-8 decode, fall back to bytes
@@ -128,11 +131,10 @@ class Stream:
     async def _run_worker(self) -> None:
         """Worker: pulls events from Rust input channel, runs user generator, pushes results."""
         try:
+
             async def input_stream() -> AsyncIterator[Any]:
                 while True:
-                    data = await asyncio.to_thread(
-                        self._scheduler.recv_input, self.stream_id, 50
-                    )
+                    data = await asyncio.to_thread(self._scheduler.recv_input, self.stream_id, 50)
                     if data is None:
                         if self._closed:
                             return  # channel disconnected → exit
@@ -146,9 +148,7 @@ class Stream:
 
         except Exception as exc:
             try:
-                self._scheduler.send_output_nowait(
-                    self.stream_id, _serialize(exc)
-                )
+                self._scheduler.send_output_nowait(self.stream_id, _serialize(exc))
             except Exception:
                 pass
 
@@ -162,9 +162,7 @@ class Stream:
 
     async def recv(self) -> Any:
         """Pull one result from the stream (waits if not ready)."""
-        data = await asyncio.to_thread(
-            self._scheduler.recv_output, self.stream_id, 5000
-        )
+        data = await asyncio.to_thread(self._scheduler.recv_output, self.stream_id, 5000)
         if data is None:
             raise RuntimeError("Stream closed before result was ready")
         result = _deserialize(data)
@@ -174,6 +172,7 @@ class Stream:
 
     async def feed(self, iterable: Any) -> AsyncIterator[Any]:
         """Push many events and iterate over results as they arrive."""
+
         async def _feeder() -> None:
             try:
                 async for event in iterable:
@@ -186,9 +185,7 @@ class Stream:
         try:
             while not self._closed:
                 try:
-                    data = await asyncio.to_thread(
-                        self._scheduler.recv_output, self.stream_id, 50
-                    )
+                    data = await asyncio.to_thread(self._scheduler.recv_output, self.stream_id, 50)
                     if data is None:
                         if feed_task.done():
                             break

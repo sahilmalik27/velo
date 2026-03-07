@@ -1,8 +1,9 @@
 """HTTP streaming adapter using httpx."""
 
 from typing import AsyncIterator, Optional
-import httpx
 from uuid import uuid4
+
+import httpx
 
 from ..types import StreamEvent
 
@@ -14,9 +15,7 @@ class HttpAdapter:
         self.client = client or httpx.AsyncClient()
         self._should_close = client is None
 
-    async def stream_lines(
-        self, url: str, **kwargs: any
-    ) -> AsyncIterator[StreamEvent]:
+    async def stream_lines(self, url: str, **kwargs: any) -> AsyncIterator[StreamEvent]:
         """Stream response line by line.
 
         Args:

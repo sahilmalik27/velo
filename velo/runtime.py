@@ -36,8 +36,11 @@ def _deserialize(data: bytes) -> Any:
         import pickle
         return pickle.loads(data[1:])
     else:
-        # Raw bytes (no tag) — passthrough
-        return data
+        # Raw bytes with no tag — attempt utf-8 decode, fall back to bytes
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data
 
 
 try:

@@ -80,20 +80,12 @@ async def test_concurrent_live_streams():
         async for event in events:
             yield {"data": event, "stream_id": id(events)}
 
-    # Open multiple streams concurrently
-    streams = []
-    for _ in range(5):
-        stream = await stream_fn(add_stream_id).__call__(None).__aenter__()
-        # Note: This is a simplified test - actual usage would use .open()
-        # Just testing concurrent initialization
-        streams.append(stream)
-
-    # Cleanup
-    for stream in streams:
-        try:
-            await stream.__aexit__(None, None, None)
-        except Exception:
-            pass
+    # Open multiple streams concurrently using .open()
+    async with add_stream_id.open() as s1,                add_stream_id.open() as s2,                add_stream_id.open() as s3,                add_stream_id.open() as s4,                add_stream_id.open() as s5:
+        streams = [s1, s2, s3, s4, s5]
+        # Verify all streams are independent
+        assert len(streams) == 5
+        assert len(set(id(s) for s in streams)) == 5
 
 
 @pytest.mark.asyncio

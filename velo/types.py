@@ -10,6 +10,7 @@ class StreamEvent:
 
     id: str
     data: Any
+    metadata: Optional[dict] = None
 
 
 @dataclass

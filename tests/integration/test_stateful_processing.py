@@ -113,4 +113,4 @@ async def test_stateful_pipeline():
     # First stage: cumsum [1, 3, 6, 10, 15]
     # Second stage: running avg of cumsum [1, 2, 3, 4, 5]
     results = await pipeline.run([1, 2, 3, 4, 5])
-    assert results == pytest.approx([1.0, 2.0, 3.0, 4.0, 5.0])
+    assert results == pytest.approx([1.0, 2.0, 10/3, 5.0, 7.0])

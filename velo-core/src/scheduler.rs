@@ -163,6 +163,7 @@ pub struct PyStreamScheduler {
 #[pymethods]
 impl PyStreamScheduler {
     #[new]
+    #[pyo3(signature = (max_concurrent=None))]
     fn new(max_concurrent: Option<usize>) -> PyResult<Self> {
         let max_concurrent = max_concurrent.unwrap_or(1000);
         Ok(Self {

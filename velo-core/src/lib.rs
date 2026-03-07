@@ -6,6 +6,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 /// Initialize tracing (called from Python)
 #[pyfunction]
+#[pyo3(signature = (level=None))]
 fn init_tracing(level: Option<String>) -> PyResult<()> {
     let filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(level.unwrap_or_else(|| "info".to_string())))

@@ -56,22 +56,7 @@ jobs:
           name: wheels-macos-universal2
           path: dist/
 
-  build-windows:
-    name: Windows x86_64
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64
-          args: --release --out dist --manifest-path velo-core/Cargo.toml --interpreter 3.11
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-windows-x86_64
-          path: dist/
+  # Windows skipped — no demand, Linux/macOS wheels cover all users
 
   build-sdist:
     name: Source distribution
@@ -96,11 +81,7 @@ jobs:
       - build-linux-x86
       - build-linux-aarch64
       - build-macos
-      - build-windows
       - build-sdist
-    environment:
-      name: pypi
-      url: https://pypi.org/p/velo-stream
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -110,5 +91,5 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        # Uses PyPI trusted publishing (OIDC) — no token needed.
-        # Configure at: https://pypi.org/manage/account/publishing/
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}

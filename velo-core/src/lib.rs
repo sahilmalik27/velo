@@ -1,3 +1,7 @@
+// pyo3 #[pymethods] macros generate code that triggers false-positive
+// `useless_conversion` warnings on PyResult<()> return types.
+#![allow(clippy::useless_conversion)]
+
 mod channel;
 mod scheduler;
 

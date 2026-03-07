@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "velo-py"
+name = "velo-stream"
 version = "0.1.0"
 description = "Fast, stateful, ephemeral stream functions with a Rust core"
 readme = "README.md"

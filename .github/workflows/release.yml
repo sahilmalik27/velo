@@ -97,7 +97,7 @@ jobs:
       - build-sdist
     environment:
       name: pypi
-      url: https://pypi.org/p/velo-py
+      url: https://pypi.org/p/velo-stream
     steps:
       - uses: actions/download-artifact@v4
         with:

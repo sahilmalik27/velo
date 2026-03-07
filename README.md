@@ -3,7 +3,7 @@
 **Stateful stream processing without the infrastructure overhead.**
 
 ```bash
-pip install velo-py
+pip install velo-stream
 ```
 
 ---
@@ -388,7 +388,7 @@ management, not to generator execution.
 ### From PyPI
 
 ```bash
-pip install velo-py
+pip install velo-stream
 ```
 
 ### From source (requires Rust)

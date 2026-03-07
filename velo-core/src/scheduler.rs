@@ -99,11 +99,7 @@ impl StreamScheduler {
     /// during recv_timeout — this prevents close_stream (write lock) from blocking
     /// for the full timeout duration.
     /// Returns None on both Timeout and Disconnected.
-    pub fn recv_input(
-        &self,
-        stream_id: &str,
-        timeout_ms: u64,
-    ) -> Result<Option<Vec<u8>>, String> {
+    pub fn recv_input(&self, stream_id: &str, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
         let rx = {
             let entry = self
                 .streams
@@ -133,11 +129,7 @@ impl StreamScheduler {
 
     /// Caller reads result from output channel (blocking with timeout, GIL released).
     /// Clones Receiver out of DashMap first — same pattern as recv_input.
-    pub fn recv_output(
-        &self,
-        stream_id: &str,
-        timeout_ms: u64,
-    ) -> Result<Option<Vec<u8>>, String> {
+    pub fn recv_output(&self, stream_id: &str, timeout_ms: u64) -> Result<Option<Vec<u8>>, String> {
         let rx = {
             let entry = self
                 .streams
@@ -290,9 +282,7 @@ mod tests {
         let scheduler = StreamScheduler::new(100, 256);
         scheduler.open_stream("test-1".to_string()).unwrap();
 
-        scheduler
-            .send_input("test-1", vec![1, 2, 3])
-            .unwrap();
+        scheduler.send_input("test-1", vec![1, 2, 3]).unwrap();
 
         let result = scheduler.recv_input("test-1", 100).unwrap();
         assert_eq!(result, Some(vec![1, 2, 3]));
@@ -326,12 +316,7 @@ mod tests {
         scheduler.open_stream("test-1".to_string()).unwrap();
 
         // Grab a clone of the input_rx before closing
-        let input_rx = scheduler
-            .streams
-            .get("test-1")
-            .unwrap()
-            .input_rx
-            .clone();
+        let input_rx = scheduler.streams.get("test-1").unwrap().input_rx.clone();
 
         scheduler.close_stream("test-1").unwrap();
 

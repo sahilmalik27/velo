@@ -27,24 +27,23 @@ impl PyChannel {
         match self.sender.try_send(data) {
             Ok(()) => Ok(true),
             Err(TrySendError::Full(_)) => Ok(false),
-            Err(TrySendError::Disconnected(_)) => {
-                Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "Channel disconnected",
-                ))
-            }
+            Err(TrySendError::Disconnected(_)) => Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Channel disconnected",
+            )),
         }
     }
 
     /// Receive an item from the channel with timeout
     fn recv_timeout(&self, timeout_ms: u64) -> PyResult<Option<Vec<u8>>> {
-        match self.receiver.recv_timeout(Duration::from_millis(timeout_ms)) {
+        match self
+            .receiver
+            .recv_timeout(Duration::from_millis(timeout_ms))
+        {
             Ok(data) => Ok(Some(data)),
             Err(crossbeam::channel::RecvTimeoutError::Timeout) => Ok(None),
-            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "Channel disconnected",
-                ))
-            }
+            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => Err(
+                pyo3::exceptions::PyRuntimeError::new_err("Channel disconnected"),
+            ),
         }
     }
 
@@ -53,11 +52,9 @@ impl PyChannel {
         match self.receiver.try_recv() {
             Ok(data) => Ok(Some(data)),
             Err(TryRecvError::Empty) => Ok(None),
-            Err(TryRecvError::Disconnected) => {
-                Err(pyo3::exceptions::PyRuntimeError::new_err(
-                    "Channel disconnected",
-                ))
-            }
+            Err(TryRecvError::Disconnected) => Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Channel disconnected",
+            )),
         }
     }
 

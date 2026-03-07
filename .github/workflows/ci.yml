@@ -33,10 +33,14 @@ jobs:
       - name: Build and install (dev)
         run: |
           pip install maturin
+          python -m venv .venv
+          source .venv/bin/activate
           maturin develop --extras dev
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -v
 
   lint:
     name: Lint

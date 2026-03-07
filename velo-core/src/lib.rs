@@ -9,14 +9,18 @@ use tracing_subscriber::{fmt, EnvFilter};
 fn init_tracing(level: Option<String>) -> PyResult<()> {
     let filter = EnvFilter::try_from_default_env()
         .or_else(|_| EnvFilter::try_new(level.unwrap_or_else(|| "info".to_string())))
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid log level: {}", e)))?;
+        .map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Invalid log level: {}", e))
+        })?;
 
     fmt()
         .with_env_filter(filter)
         .with_target(false)
         .with_thread_ids(true)
         .try_init()
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to init tracing: {}", e)))?;
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to init tracing: {}", e))
+        })?;
 
     Ok(())
 }

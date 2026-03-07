@@ -1,7 +1,15 @@
 """Core types for streamfn."""
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
+
+
+@dataclass
+class StreamEvent:
+    """A single event flowing through a stream."""
+
+    id: str
+    data: Any
 
 
 @dataclass

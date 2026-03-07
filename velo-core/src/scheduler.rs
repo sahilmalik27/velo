@@ -175,7 +175,7 @@ impl PyStreamScheduler {
     fn open_stream(&self, stream_id: String) -> PyResult<String> {
         self.inner
             .open_stream(stream_id)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
     /// Send event bytes to stream's input channel (caller → worker, GIL released)
@@ -184,7 +184,7 @@ impl PyStreamScheduler {
         py.allow_threads(|| {
             inner
                 .send_input(&stream_id, data)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)
         })
     }
 
@@ -199,7 +199,7 @@ impl PyStreamScheduler {
         let result = py.allow_threads(|| {
             inner
                 .recv_input(&stream_id, timeout_ms)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)
         })?;
 
         Ok(result.map(|data| pyo3::types::PyBytes::new_bound(py, &data).unbind()))
@@ -209,7 +209,7 @@ impl PyStreamScheduler {
     fn send_output_nowait(&self, stream_id: String, data: Vec<u8>) -> PyResult<()> {
         self.inner
             .send_output_nowait(&stream_id, data)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)
     }
 
     /// Caller reads result from output channel (blocking, GIL released)
@@ -223,7 +223,7 @@ impl PyStreamScheduler {
         let result = py.allow_threads(|| {
             inner
                 .recv_output(&stream_id, timeout_ms)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)
         })?;
 
         Ok(result.map(|data| pyo3::types::PyBytes::new_bound(py, &data).unbind()))
@@ -235,7 +235,7 @@ impl PyStreamScheduler {
         py.allow_threads(|| {
             inner
                 .close_stream(&stream_id)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)
         })
     }
 

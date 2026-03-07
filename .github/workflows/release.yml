@@ -21,7 +21,7 @@ jobs:
         with:
           target: x86_64
           manylinux: auto
-          args: --release --out dist --manifest-path velo-core/Cargo.toml --interpreter 3.9 3.10 3.11 3.12
+          args: --release --out dist --manifest-path velo-core/Cargo.toml --interpreter 3.12 3.13
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-x86_64
@@ -36,7 +36,7 @@ jobs:
         with:
           target: aarch64
           manylinux: auto
-          args: --release --out dist --manifest-path velo-core/Cargo.toml --interpreter 3.9 3.10 3.11 3.12
+          args: --release --out dist --manifest-path velo-core/Cargo.toml --interpreter 3.12 3.13
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-aarch64
@@ -50,7 +50,7 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           target: universal2-apple-darwin
-          args: --release --out dist --manifest-path velo-core/Cargo.toml --interpreter 3.9 3.10 3.11 3.12
+          args: --release --out dist --manifest-path velo-core/Cargo.toml --interpreter 3.12 3.13
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-universal2

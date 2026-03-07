@@ -3,13 +3,13 @@ members = ["velo-core"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 authors = []
 
 [workspace.dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py312"] }
 tokio = { version = "1.40", features = ["full"] }
 crossbeam = "0.8"
 memmap2 = "0.9"

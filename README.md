@@ -3,7 +3,7 @@
 **Stateful stream processing without the infrastructure overhead.**
 
 ```bash
-pip install velo-stream
+pip install velo-stream  # requires Python 3.12+
 ```
 
 [![CI](https://github.com/sahilmalik27/velo/actions/workflows/ci.yml/badge.svg)](https://github.com/sahilmalik27/velo/actions/workflows/ci.yml)
@@ -388,7 +388,7 @@ For a deep dive: [`docs/architecture.md`](docs/architecture.md) · [`docs/rust-d
 ### From PyPI
 
 ```bash
-pip install velo-stream
+pip install velo-stream  # requires Python 3.12+
 ```
 
 Wheels available for Python 3.8–3.12 on Linux (x86_64, aarch64), macOS (universal), and Windows (x86_64). No Rust required.

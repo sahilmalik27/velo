@@ -135,7 +135,20 @@ One worker per stream. All state is just local variables. Worker lives exactly a
 ```python
 from velo import stream_fn
 
-# Define — just write an async generator
+@stream_fn
+async def running_average(events):
+    total, count = 0.0, 0
+    async for event in events:
+        total += event
+        count += 1
+        yield total / count
+```
+
+**In a regular script** (save as `test.py`, run with `python test.py`):
+
+```python
+from velo import stream_fn
+
 @stream_fn
 async def running_average(events):
     total, count = 0.0, 0
@@ -144,22 +157,38 @@ async def running_average(events):
         count += 1
         yield total / count
 
-# Batch — process a list, get results
-results = await running_average.run([1, 2, 3, 4, 5])
-# → [1.0, 1.5, 2.0, 2.5, 3.0]
+# run_sync() works in plain scripts — no asyncio boilerplate needed
+results = running_average.run_sync([1, 2, 3, 4, 5])
+print(results)  # [1.0, 1.5, 2.0, 2.5, 3.0]
+```
 
-# Live stream — open, send events, receive results
-async with running_average.open() as stream:
-    await stream.send(10)
-    print(await stream.recv())  # 10.0
-    await stream.send(20)
-    print(await stream.recv())  # 15.0
+**In async code** (inside `async def` or with `asyncio.run`):
 
-# Compose — chain functions with |
-pipeline = normalize | running_average | alert_if_high
-async with pipeline.open() as stream:
-    async for result in stream.feed(sensor_data):
-        print(result)
+```python
+import asyncio
+from velo import stream_fn
+
+@stream_fn
+async def running_average(events):
+    total, count = 0.0, 0
+    async for event in events:
+        total += event
+        count += 1
+        yield total / count
+
+async def main():
+    # Batch mode
+    results = await running_average.run([1, 2, 3, 4, 5])
+    print(results)  # [1.0, 1.5, 2.0, 2.5, 3.0]
+
+    # Live stream
+    async with running_average.open() as stream:
+        await stream.send(10)
+        print(await stream.recv())  # 10.0
+        await stream.send(20)
+        print(await stream.recv())  # 15.0
+
+asyncio.run(main())
 ```
 
 ---

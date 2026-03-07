@@ -96,6 +96,24 @@ class StreamFunctionHandle:
 
         return results
 
+    def run_sync(self, iterable: Any) -> List[Any]:
+        """Synchronous batch mode — wraps run() with asyncio.run().
+
+        Use this in regular scripts (not inside async functions).
+
+        Example::
+
+            results = my_fn.run_sync([1, 2, 3])
+
+        Args:
+            iterable: Sync or async iterable of events
+
+        Returns:
+            List of all results
+        """
+        import asyncio
+        return asyncio.run(self.run(iterable))
+
     def open(self) -> Any:
         """Live mode - open a stream and return async context manager.
 

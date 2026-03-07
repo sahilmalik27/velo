@@ -6,6 +6,11 @@
 pip install velo-stream
 ```
 
+[![CI](https://github.com/sahilmalik27/velo/actions/workflows/ci.yml/badge.svg)](https://github.com/sahilmalik27/velo/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/velo-stream)](https://pypi.org/project/velo-stream/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Python](https://img.shields.io/pypi/pyversions/velo-stream)](https://pypi.org/project/velo-stream/)
+
 ---
 
 ## The problem
@@ -103,17 +108,6 @@ async def process_frames(frames):
 
 One worker per stream. All state is just local variables. Worker lives exactly as long as the stream — then disappears.
 
-**Velo is a dict of streams with automatic cleanup, timeout handling, backpressure, and thread safety — so you don't write that yourself.**
-
-### When to use Velo
-
-| Situation | Recommendation |
-|-----------|----------------|
-| One stream, simple state | Plain variable — don't use Velo |
-| A few streams you control manually | Dict is fine |
-| Many short-lived concurrent streams | Velo saves real complexity |
-| Already on Flink/Faust and happy | Stay there |
-
 ---
 
 ## What Velo is (and isn't)
@@ -124,19 +118,15 @@ One worker per stream. All state is just local variables. Worker lives exactly a
 
 **Velo competes with:** Flink, Faust, Bytewax — for the specific case of short-lived, bursty, stateful streams.
 
-**Velo does not compete with:** Lambda, Cloud Functions — those are different deployment models entirely.
-
 ### vs the alternatives
 
 | Tool | Startup | Has state | Idle cost | Complexity |
 |------|---------|-----------|-----------|------------|
-| **Velo** | ~microseconds | ✅ (local vars) | Near zero — workers are dropped | Low — just write generators |
-| Redis + functions | ~ms (+ Redis RTT) | ✅ (external) | Redis always running | Medium — manage keys + TTLs |
+| **Velo** | ~350μs | ✅ local vars | Near zero — workers drop on idle | Low — just write generators |
+| Redis + functions | ~ms + RTT | ✅ external | Redis always running | Medium — manage keys + TTLs |
 | Apache Flink | 2–10 seconds | ✅ | High — always on | High — JVM, cluster setup |
 | Faust | ~seconds | ✅ | Medium — always on | Medium — Kafka required |
 | Bytewax | ~ms | ✅ | Medium — always on | Medium — continuous pipeline |
-
-Velo's position: **lower startup than Flink, no external storage like Redis, workers go idle (drop to zero memory) when there's no load.**
 
 ---
 
@@ -219,7 +209,7 @@ async with my_fn.open() as stream:
 ### `|` — pipe composition
 
 ```python
-pipeline = fn_a | fn_b | fn_c   # output of fn_a feeds fn_b, etc.
+pipeline = fn_a | fn_b | fn_c
 results = await pipeline.run(data)
 ```
 
@@ -234,8 +224,6 @@ results = await pipeline.run(data)
 async def my_fn(events):
     ...
 ```
-
-All config is optional. Works with zero config.
 
 ---
 
@@ -271,11 +259,6 @@ async def rolling_stats(events):
             "min": min(window),
             "max": max(window),
         }
-
-async with rolling_stats.open() as stream:
-    async for stat in stream.feed(sensor_readings):
-        if stat["max"] > threshold:
-            trigger_alert(stat)
 ```
 
 ### LLM — stateful token stream post-processing
@@ -293,13 +276,9 @@ async def extract_json(tokens):
         if depth == 0 and buffer.strip().startswith("{"):
             yield json.loads(buffer)
             buffer = ""
-
-async with extract_json.open() as stream:
-    async for obj in stream.feed(llm.stream("List 3 items as JSON")):
-        process(obj)
 ```
 
-### Session — stateful user event correlation
+### Session — per-user fraud detection
 
 ```python
 @stream_fn
@@ -312,25 +291,29 @@ async def detect_fraud(events):
         risk = len(seen_ips) > 3 or total_spend > 1000
         yield {"event": event, "risk_score": risk}
 
-# One stream per user session — isolated state, auto cleanup
+# One stream per user — isolated state, auto cleanup on disconnect
 async with detect_fraud.open() as stream:
     async for result in stream.feed(user_events):
         if result["risk_score"]:
             flag_for_review(result)
 ```
 
+More examples in [`examples/`](examples/).
+
 ---
 
 ## Performance
 
-Velo's Rust runtime (tokio + crossbeam) delivers:
+Benchmarked on real hardware (Rust core, crossbeam SPSC channels):
 
-| Metric | Target |
+| Metric | Result |
 |--------|--------|
-| Stream startup | < 500μs |
-| Inter-event P99 latency | < 500μs |
-| Throughput | > 500K events/sec (1KB payloads) |
-| 1000 concurrent idle streams | Near-zero memory (workers dropped) |
+| Stream startup | **0.35ms** |
+| Inter-event P99 latency | **0.48ms** |
+| 1000 concurrent streams | ✅ stable |
+| Throughput (current) | ~6K ev/s |
+
+> **Note on throughput:** The `asyncio.to_thread` bridge adds ~200μs overhead per event at the Python/Rust boundary. The Rust core itself handles >500K ev/s — the bottleneck is OS thread scheduling, not the channels. A batch API (in roadmap) will close this gap significantly. See [`docs/throughput-v2-design.md`](docs/throughput-v2-design.md) for the full analysis and options.
 
 Run the benchmarks yourself:
 
@@ -342,8 +325,6 @@ python benchmarks/runner.py --scenario all --format markdown
 ---
 
 ## How it works
-
-Event Flow (data path in Rust):
 
 ```
   send(event)
@@ -365,21 +346,11 @@ Event Flow (data path in Rust):
   recv() → caller
 ```
 
-Rust handles:
-  - Stream lifecycle (open/close in microseconds)
-  - Channel buffering (crossbeam, lock-free)
-  - Backpressure (bounded channels)
-  - Concurrency limits (max_concurrent enforcement)
-  - Metrics aggregation
+**Rust handles:** stream lifecycle, channel buffering (crossbeam, lock-free), backpressure (bounded channels), concurrency limits, metrics.
 
-Python handles:
-  - Your stream function logic (async generators)
-  - Serialization boundary (msgpack/pickle)
-  - asyncio integration (to_thread for blocking channel ops)
+**Python handles:** your stream function logic (async generators), serialization boundary.
 
-Note: Python generator code runs under the GIL. Rust channels release the
-GIL for I/O ops. True parallelism applies to channel operations and lifecycle
-management, not to generator execution.
+For a deep dive: [`docs/architecture.md`](docs/architecture.md) · [`docs/rust-data-path.md`](docs/rust-data-path.md)
 
 ---
 
@@ -391,10 +362,11 @@ management, not to generator execution.
 pip install velo-stream
 ```
 
+Wheels available for Python 3.8–3.12 on Linux (x86_64, aarch64), macOS (universal), and Windows (x86_64). No Rust required.
+
 ### From source (requires Rust)
 
 ```bash
-# Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 git clone https://github.com/sahilmalik27/velo.git
@@ -403,25 +375,11 @@ pip install maturin
 maturin develop --release
 ```
 
-### Verify
-
-```python
-import velo
-print(velo.__version__)  # 0.1.0
-```
-
 ---
 
 ## Contributing
 
-Contributions are welcome. Velo is early — there's a lot of room to improve.
-
-**Good first issues:**
-- New adapters (Kafka, Redis Streams, WebSocket, gRPC)
-- Improve benchmark scenarios with real-world workloads
-- JavaScript / Node.js bindings
-
-**How to contribute:**
+Contributions are welcome.
 
 ```bash
 git clone https://github.com/sahilmalik27/velo.git
@@ -431,6 +389,12 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
+**Good first issues:**
+- New adapters (Kafka, Redis Streams, WebSocket)
+- Batch API (`send_batch`) for higher throughput
+- JavaScript / Node.js bindings
+
+**Rules:**
 1. Fork → branch → change → test → PR
 2. All Rust changes need a before/after benchmark
 3. Keep the public API surface small — resist adding to the 4 exports
@@ -441,7 +405,8 @@ velo/
 ├── velo-core/      # Rust runtime (tokio, crossbeam, PyO3)
 ├── velo/           # Python API (@stream_fn, Stream, config)
 ├── benchmarks/     # Performance suite
-├── examples/       # Real-world usage
+├── examples/       # Real-world usage demos
+├── docs/           # Architecture, design decisions
 └── tests/          # Unit + integration
 ```
 
@@ -449,21 +414,22 @@ velo/
 
 ## Roadmap
 
-- [ ] PyPI wheel publishing (no Rust required to install)
+- [x] Full Rust data path (crossbeam SPSC, GIL-released send/recv)
+- [x] PyPI release (`pip install velo-stream`)
+- [x] Multi-platform wheels via GitHub Actions
+- [ ] Batch API — `send_batch([e1, e2, ...])` for 10-50× throughput
+- [ ] Dedicated worker thread per stream — eliminate `asyncio.to_thread` overhead
 - [ ] Kafka adapter
 - [ ] Redis Streams adapter
-- [ ] Persistent state (checkpoint to disk between streams)
+- [ ] Persistent state (checkpoint to disk)
 - [ ] Prometheus / OpenTelemetry metrics export
-- [ ] JavaScript / Node.js bindings
 
 ---
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
-
-Free for commercial use. Includes explicit patent grant.
+Apache 2.0 — see [LICENSE](LICENSE). Free for commercial use. Includes explicit patent grant.
 
 ---
 
-*Built on [tokio](https://tokio.rs), [crossbeam](https://github.com/crossbeam-rs/crossbeam), and [PyO3](https://pyo3.rs). Inspired by [arXiv:2603.03089](https://arxiv.org/abs/2603.03089).*
+*Built on [tokio](https://tokio.rs), [crossbeam](https://github.com/crossbeam-rs/crossbeam), and [PyO3](https://pyo3.rs).*
